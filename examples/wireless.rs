@@ -38,6 +38,12 @@ struct AirwavesState {
 }
 
 struct Airwaves {
+    /// Free-running mode: the instances are NOT frame-barriered, and
+    /// blocking receives use a wall-clock timeout the way LocalMP does.
+    /// Non-deterministic by construction � it exists to separate "does
+    /// this game's wireless work under melonDS at all" from "is our
+    /// lockstep timing model right".
+    free: bool,
     state: Mutex<AirwavesState>,
     cv: Condvar,
     // Traffic counters, for the experiment's verdict.
@@ -46,8 +52,9 @@ struct Airwaves {
 }
 
 impl Airwaves {
-    fn new() -> Self {
+    fn new(free: bool) -> Self {
         Airwaves {
+            free,
             state: Mutex::new(AirwavesState::default()),
             cv: Condvar::new(),
             sent: [AtomicU64::new(0), AtomicU64::new(0)],
@@ -76,28 +83,51 @@ impl Airwaves {
         self.cv.notify_all();
     }
 
-    /// Park until the peer can no longer produce traffic for emulated
-    /// time <= `ts` this frame. Purely emulated-time decisions.
-    fn wait_peer_past<'a>(&'a self, me: usize, ts: u64) -> std::sync::MutexGuard<'a, AirwavesState> {
+    /// Block until this seat can be answered, the way LocalMP's
+    /// semaphore wait does: return as soon as traffic is actually
+    /// queued for us. Progress heuristics are only the *give-up*
+    /// conditions — a receive that returns empty while the peer was
+    /// still going to send this round is what collapses an MP session.
+    ///
+    /// `want_reply` picks which queue counts as data. The give-up set
+    /// is deterministic and deadlock-free: the peer detached, the peer
+    /// finished its frame (so it sends nothing more this round), or the
+    /// peer is parked too — nobody can produce data, so waiting longer
+    /// would hang the pair.
+    fn wait_for_traffic<'a>(&'a self, me: usize, ts: u64, want_reply: bool) -> std::sync::MutexGuard<'a, AirwavesState> {
         let mut st = self.state.lock().unwrap();
         st.seats[me].parked_at = Some(ts);
         if ts > st.seats[me].progress {
             st.seats[me].progress = ts;
         }
         self.cv.notify_all();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(25);
         loop {
-            let peer = &st.seats[1 - me];
             let my_frame = st.seats[me].frames_done;
-            let ok = peer.progress > ts
-                || peer.frames_done > my_frame
-                || !peer.attached
-                || peer.parked_at.map(|p| p > ts || (p == ts && me == 0)).unwrap_or(false);
-            if ok {
+            let seat = &st.seats[me];
+            let have_data = if want_reply {
+                !seat.replies.is_empty()
+            } else {
+                !seat.incoming.is_empty()
+            };
+            let peer = &st.seats[1 - me];
+            let peer_stuck = !peer.attached || peer.frames_done > my_frame || peer.parked_at.is_some();
+            let give_up = if self.free {
+                std::time::Instant::now() >= deadline
+            } else {
+                peer_stuck
+            };
+            if have_data || give_up {
                 st.seats[me].parked_at = None;
                 self.cv.notify_all();
                 return st;
             }
-            st = self.cv.wait(st).unwrap();
+            st = if self.free {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                self.cv.wait_timeout(st, remaining).unwrap().0
+            } else {
+                self.cv.wait(st).unwrap()
+            };
         }
     }
 }
@@ -168,26 +198,41 @@ impl melonds::Host for AirwavesHost {
             }
         }
         let my_ts = self.0.state.lock().unwrap().seats[me].progress;
-        let mut st = self.0.wait_peer_past(me, my_ts);
+        let mut st = self.0.wait_for_traffic(me, my_ts, false);
         match st.seats[me].incoming.pop_front() {
             Some(msg) => {
                 self.0.received[me].fetch_add(1, Ordering::Relaxed);
                 Some(deliver(msg, data, ts_out))
             }
-            None => None,
+            // Nothing on the air is `0` — a timed-out wait, which the
+            // client retries. `-1` (None) means the HOST IS GONE and
+            // tears the session down with a communication error, so it
+            // is reserved for a peer that has actually detached.
+            None => Some(if st.seats[1 - me].attached { 0 } else { -1 }),
         }
     }
 
     fn mp_recv_replies(&self, inst: melonds::InstanceId, data: &mut [u8], ts: u64, aidmask: u16) -> u16 {
         let me = Airwaves::seat_of(inst);
-        let mut st = self.0.wait_peer_past(me, ts + WIFI_REPLY_WINDOW_US);
+        let mut st = self.0.wait_for_traffic(me, ts + WIFI_REPLY_WINDOW_US, true);
         let mut mask = 0u16;
         while let Some(msg) = st.seats[me].replies.pop_front() {
             if let Mp::Reply { ts: rts, aid, data: d } = msg {
-                if rts + 32 < ts {
+                // No stale-reply horizon here (LocalMP drops replies
+                // older than the cmd by 32us). Our two instances are
+                // frame-locked rather than wall-clock concurrent, so
+                // their wifi clocks sit up to a frame apart and that
+                // filter silently eats most of a round's replies.
+                let _ = rts;
+                // LocalMP packs reply payloads at (aid-1)*1024 — aid 0
+                // is the host, clients start at 1 — while the returned
+                // mask uses the raw aid bit. Writing at aid*1024 hands
+                // the host a zeroed slot for its first client, which
+                // reads as "communication error" one round later.
+                if aid == 0 {
                     continue;
                 }
-                let off = aid as usize * 1024;
+                let off = (aid as usize - 1) * 1024;
                 data[off..off + d.len()].copy_from_slice(&d);
                 mask |= 1 << aid;
                 self.0.received[me].fetch_add(1, Ordering::Relaxed);
@@ -287,7 +332,9 @@ fn dump(nds: &mut melonds::Nds, path: &std::path::Path) {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let free = args.iter().any(|a| a == "--free");
+    args.retain(|a| a != "--free");
     let rom = std::fs::read(&args[0]).expect("failed to read rom");
     let save = std::fs::read(&args[1]).expect("failed to read save");
     let (frames0, tags0) = parse_script(&args[2]);
@@ -295,7 +342,7 @@ fn main() {
     let outdir = std::path::PathBuf::from(&args[4]);
     std::fs::create_dir_all(&outdir).unwrap();
 
-    let air: &'static Airwaves = Box::leak(Box::new(Airwaves::new()));
+    let air: &'static Airwaves = Box::leak(Box::new(Airwaves::new(free)));
     melonds::install_host(Box::new(AirwavesHost(air))).ok().expect("host installed twice");
 
     let mut pair = [
@@ -310,6 +357,48 @@ fn main() {
     let scripts = [&frames0, &frames1];
     let total = frames0.len().max(frames1.len());
     let start = std::time::Instant::now();
+
+    if free {
+        // Each instance runs its whole script on its own thread with no
+        // barrier, the way melonDS's own frontend runs local MP.
+        let tagsets = [&tags0, &tags1];
+        std::thread::scope(|s| {
+            for (i, nds) in pair.iter_mut().enumerate() {
+                let outdir = &outdir;
+                s.spawn(move || {
+                    for (frame, input) in scripts[i].iter().enumerate() {
+                        match input.touch {
+                            Some((x, y)) => nds.touch(x, y),
+                            None => nds.release_screen(),
+                        }
+                        nds.set_keys(input.keys);
+                        nds.run_frame();
+                        {
+                            let mut st = air.state.lock().unwrap();
+                            st.seats[i].frames_done += 1;
+                            air.cv.notify_all();
+                        }
+                        for (at, tag) in tagsets[i].iter().filter(|(at, _)| *at == frame) {
+                            let _ = at;
+                            dump(nds, &outdir.join(format!("i{i}_{tag}.png")));
+                        }
+                    }
+                });
+            }
+        });
+        let elapsed = start.elapsed();
+        println!(
+            "FREE-RUN {} frames in {:.2?}; traffic: sent {}/{} received {}/{}",
+            total,
+            elapsed,
+            air.sent[0].load(Ordering::Relaxed),
+            air.sent[1].load(Ordering::Relaxed),
+            air.received[0].load(Ordering::Relaxed),
+            air.received[1].load(Ordering::Relaxed),
+        );
+        return;
+    }
+
     for frame in 0..total {
         let inputs = [0, 1].map(|i| scripts[i].get(frame).copied().unwrap_or_default());
         std::thread::scope(|s| {
