@@ -66,10 +66,11 @@ MdsNds* mds_nds_new(const uint8_t* rom, uint32_t rom_len, const uint8_t* save, u
     wrapper->userdata = userdata;
 
     NDSArgs args {};
-    // Defaults from Args.h already give FreeBIOS images and JITArgs();
-    // we want the interpreter (savestate loads reset the JIT block cache
-    // anyway, which would make every rollback pay a recompile).
-    args.JIT = std::nullopt;
+    // Defaults from Args.h already give FreeBIOS images and JITArgs(),
+    // and we keep the JIT: interpreting four ARM cores (two per console)
+    // cannot hold 60 fps for a link. A savestate load flushes the block
+    // cache, so rollback pays a recompile, but that is far cheaper than
+    // interpreting every tick.
     args.Firmware = Firmware(0);
 
     // Uniquify the generated firmware's MAC per instance, mirroring

@@ -368,17 +368,29 @@ impl Nds {
     }
 
     /// Serialize the full instance state into `buf` (cleared first).
+    /// Serialize the full instance state into `buf`.
+    ///
+    /// Rollback calls this every tick, so the buffer is grown rather
+    /// than cleared and refilled: handing back the `Vec` from a previous
+    /// save reuses its allocation and skips re-zeroing bytes the core is
+    /// about to overwrite anyway.
     pub fn save_state(&mut self, buf: &mut Vec<u8>) -> Result<(), Error> {
-        // 17-and-change MB of real state; start there and grow if the
-        // core ever wants more.
-        let mut cap = self.state_buf_hint.max(20 << 20);
+        // The first save probes with a generous ceiling; after that the
+        // measured size (plus slack) is the size, and a DS state runs
+        // ~6 MB rather than the 20 MB the probe reserves.
+        let mut cap = if self.state_buf_hint > 0 {
+            self.state_buf_hint
+        } else {
+            20 << 20
+        };
         loop {
-            buf.clear();
-            buf.resize(cap, 0);
-            let n = unsafe { melonds_sys::mds_state_save(self.ptr, buf.as_mut_ptr(), cap as u32) };
+            if buf.len() < cap {
+                buf.resize(cap, 0);
+            }
+            let n = unsafe { melonds_sys::mds_state_save(self.ptr, buf.as_mut_ptr(), buf.len() as u32) };
             if n > 0 {
                 buf.truncate(n as usize);
-                self.state_buf_hint = n as usize + (1 << 20);
+                self.state_buf_hint = n as usize + (64 << 10);
                 return Ok(());
             }
             if cap >= 256 << 20 {
