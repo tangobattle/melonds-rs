@@ -49,9 +49,15 @@ fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let melonds_dir = manifest_dir.join("melonDS");
 
-    // The JIT is why this crate is built with UCRT64 at all. Opt out
-    // with MELONDS_JIT=0 if a build ever needs the interpreter.
-    let jit = std::env::var("MELONDS_JIT").map(|v| v != "0").unwrap_or(true);
+    // The JIT works and is ~3.7x faster, but a snapshot/restore does not
+    // replay bit-identically under it: a savestate load flushes the
+    // block cache, so the replay runs on a cold cache while the first
+    // pass ran on a warm one, and the different block boundaries move
+    // emulated timing. Rollback needs bit-exactness, so the JIT is
+    // opt-in (MELONDS_JIT=1) until that is solved — measured with
+    // fastmem both on and off, which produce identical digests, so
+    // fastmem is not the cause.
+    let jit = std::env::var("MELONDS_JIT").map(|v| v != "0").unwrap_or(false);
     println!("cargo:rerun-if-env-changed=MELONDS_JIT");
 
     let ucrt = ucrt64_root();

@@ -71,9 +71,6 @@ MdsNds* mds_nds_new(const uint8_t* rom, uint32_t rom_len, const uint8_t* save, u
     // cannot hold 60 fps for a link. A savestate load flushes the block
     // cache, so rollback pays a recompile, but that is far cheaper than
     // interpreting every tick.
-    // Fast memory is on: it maps the guest address space and catches
-    // stray accesses with a fault handler, which is the difference
-    // between a JIT that guards every load and one that does not.
     args.Firmware = Firmware(0);
 
     // Uniquify the generated firmware's MAC per instance, mirroring
