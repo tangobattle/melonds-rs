@@ -1,0 +1,12 @@
+[package]
+name = "melonds-sys"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Raw FFI to the vendored melonDS core through the embedding shim"
+links = "melonds"
+
+[build-dependencies]
+bindgen = "0.72"
+cc = { version = "1", features = ["parallel"] }
+cmake = "0.1"

@@ -1,0 +1,114 @@
+// C ABI over the melonDS core for the Rust binding.
+//
+// One MdsNds is one emulated DS. Instances are independent (the core's
+// only cross-instance state is thread_local) — a link of two lives in
+// one process and exchanges wireless frames through the host vtable's
+// MP hooks, which receive the per-instance `userdata` passed to
+// mds_nds_new. All hooks are process-global function pointers; install
+// them once before creating any instance.
+#ifndef MELONDS_SHIM_H
+#define MELONDS_SHIM_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct MdsNds MdsNds;
+
+// Wireless + save hooks into the embedder. Any pointer may be null:
+// null MP hooks behave as empty airwaves (sends succeed into the void,
+// receives report nothing), a null write_save drops save writes, a null
+// log goes to stderr. MP semantics mirror melonDS Platform::MP_*:
+// timestamps are the sender's emulated wifi microsecond clock, receives
+// return the packet length (0 = nothing available, -1 = not connected),
+// recv_replies returns the aid bitmask of replies written.
+typedef struct MdsHostVtable {
+    void (*log)(int level, const char* msg);
+    void (*write_save)(void* userdata, const uint8_t* data, uint32_t len, uint32_t writeoffset, uint32_t writelen);
+    void (*signal_stop)(void* userdata, int reason);
+
+    void (*mp_begin)(void* userdata);
+    void (*mp_end)(void* userdata);
+    int (*mp_send_packet)(void* userdata, const uint8_t* data, int len, uint64_t timestamp);
+    int (*mp_recv_packet)(void* userdata, uint8_t* data, uint64_t* timestamp);
+    int (*mp_send_cmd)(void* userdata, const uint8_t* data, int len, uint64_t timestamp);
+    int (*mp_send_reply)(void* userdata, const uint8_t* data, int len, uint64_t timestamp, uint16_t aid);
+    int (*mp_send_ack)(void* userdata, const uint8_t* data, int len, uint64_t timestamp);
+    int (*mp_recv_host_packet)(void* userdata, uint8_t* data, uint64_t* timestamp);
+    uint16_t (*mp_recv_replies)(void* userdata, uint8_t* data, uint64_t timestamp, uint16_t aidmask);
+} MdsHostVtable;
+
+// Install the process-global host hooks. Copies the struct.
+void mds_set_host_vtable(const MdsHostVtable* vt);
+
+// Build a DS with FreeBIOS + generated firmware (MAC uniquified by
+// instance_id the same way melonDS's frontend does), interpreter CPU,
+// non-threaded software renderer, and the given retail cart. `save` may
+// be null for a blank save. Returns null on cart parse failure.
+MdsNds* mds_nds_new(const uint8_t* rom, uint32_t rom_len, const uint8_t* save, uint32_t save_len, int instance_id,
+                    void* userdata);
+void mds_nds_free(MdsNds* nds);
+
+// Pin the cart RTC. Call before mds_boot.
+void mds_rtc_set(MdsNds* nds, int year, int month, int day, int hour, int minute, int second);
+
+// Reset and direct-boot the cart (skips the DS menu; required with
+// FreeBIOS). The emulator is running after this returns.
+void mds_boot(MdsNds* nds);
+
+// Run one video frame. Returns the number of scanlines emulated (0 if
+// the core is stopped).
+uint32_t mds_run_frame(MdsNds* nds);
+
+// Active-high key bits, matching the DS KEYINPUT/KEYXY layout:
+// 0=A 1=B 2=Select 3=Start 4=Right 5=Left 6=Up 7=Down 8=R 9=L 10=X 11=Y.
+void mds_set_keys(MdsNds* nds, uint32_t keys);
+void mds_touch(MdsNds* nds, uint16_t x, uint16_t y);
+void mds_release_screen(MdsNds* nds);
+
+// Borrow the current front framebuffers, 32-bit BGRA, 256x192 each.
+// Valid until the next mds_run_frame / mds_state_load. Returns 0 and
+// nulls both on failure (no frame rendered yet).
+int mds_framebuffers(MdsNds* nds, const uint32_t** top, const uint32_t** bottom);
+
+// Drain up to max_frames stereo sample pairs into out (interleaved L/R,
+// so out must hold 2*max_frames i16). Returns pairs written.
+int mds_audio_read(MdsNds* nds, int16_t* out, int max_frames);
+
+// Direct main-RAM aperture (4 MB in DS mode, mask 0x3FFFFF).
+uint8_t* mds_main_ram(MdsNds* nds, uint32_t* mask_out);
+
+// Bus accessors (IO/VRAM included), ARM9-visible address space. Writes
+// go through the bus so JIT/dirty tracking stays coherent.
+uint32_t mds_arm9_read32(MdsNds* nds, uint32_t addr);
+uint16_t mds_arm9_read16(MdsNds* nds, uint32_t addr);
+uint8_t mds_arm9_read8(MdsNds* nds, uint32_t addr);
+void mds_arm9_write32(MdsNds* nds, uint32_t addr, uint32_t val);
+void mds_arm9_write16(MdsNds* nds, uint32_t addr, uint16_t val);
+void mds_arm9_write8(MdsNds* nds, uint32_t addr, uint8_t val);
+
+// The ARM9 program counter (r15) — for trap-anchor scouting.
+uint32_t mds_arm9_pc(MdsNds* nds);
+
+// Emulated system-clock cycle count (33.513982 MHz domain) — the
+// lockstep coordinator's notion of instance progress.
+uint64_t mds_sys_timestamp(MdsNds* nds);
+
+// Savestate round-trip, in memory. mds_state_save returns the number of
+// bytes written, or -1 if cap was too small (call again with a bigger
+// buffer). mds_state_load returns 1 on success.
+int32_t mds_state_save(MdsNds* nds, uint8_t* buf, uint32_t cap);
+int32_t mds_state_load(MdsNds* nds, const uint8_t* buf, uint32_t len);
+
+// Copy of the cart's current save memory. Returns length (0 if none);
+// out may be null to query the length.
+uint32_t mds_save_read(MdsNds* nds, uint8_t* out, uint32_t cap);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

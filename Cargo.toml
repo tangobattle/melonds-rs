@@ -1,0 +1,17 @@
+[package]
+name = "melonds"
+version = "0.1.0"
+edition = "2021"
+# The vendored melonDS core is GPL-3.0-or-later, which governs the
+# combined work; the binding code is too so there's no ambiguity.
+license = "GPL-3.0-or-later"
+description = "Safe bindings to the melonDS Nintendo DS core, shaped for deterministic multi-instance embedding"
+
+[dependencies]
+melonds-sys = { path = "melonds-sys" }
+thiserror = "1"
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[workspace]
