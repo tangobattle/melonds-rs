@@ -1,21 +1,127 @@
-//! Builds melonDS and the embedding shim as a DLL, then links it.
+//! Builds melonDS and the embedding shim, then links them.
 //!
-//! The core is compiled with **MSYS2 UCRT64** (melonDS's own recommended
-//! Windows toolchain) rather than MSVC, because the JIT is GCC/Clang
-//! code — GAS-syntax linkage stub, variable-length arrays, GNU
-//! declarations — that MSVC rejects outright. Two interpreted ARM cores
-//! per console cannot hold 60 fps for a link, so the JIT is not
-//! optional here.
+//! Two shapes, one seam (the C ABI in shim.h):
 //!
-
-//! Mixing toolchains is safe because the seam is a **C ABI**: all C++
-//! lives inside the DLL, libgcc/libstdc++ are linked into it statically,
-//! and the Rust side (an `x86_64-pc-windows-msvc` build) sees plain C
-//! functions through an import library. That keeps this crate usable
-//! from a normal MSVC-target workspace with no toolchain migration.
+//! - **Unix (macOS/Linux):** the system toolchain compiles the core, the
+//!   shim, and the final link alike, so everything is linked statically
+//!   into the Rust binary — no shared library to place at runtime.
+//!
+//! - **Windows:** the core is compiled with **MSYS2 UCRT64** (melonDS's
+//!   own recommended Windows toolchain) rather than MSVC, because the
+//!   JIT is GCC/Clang code — GAS-syntax linkage stub, variable-length
+//!   arrays, GNU declarations — that MSVC rejects outright. Mixing
+//!   toolchains is safe because all C++ lives inside a DLL,
+//!   libgcc/libstdc++ are linked into it statically, and the Rust side
+//!   (an `x86_64-pc-windows-msvc` build) sees plain C functions through
+//!   an import library. That keeps this crate usable from a normal
+//!   MSVC-target workspace with no toolchain migration.
+//!
+//! Two interpreted ARM cores per console cannot hold 60 fps for a link,
+//! so the JIT is not optional here.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+fn main() {
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let melonds_dir = manifest_dir.join("melonDS");
+
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+
+    // The JIT is on: interpreting four ARM cores cannot hold 60 fps for
+    // a link, and with the block-cache flush removed from the savestate
+    // load path (see the vendored NDS.cpp) a link still replays
+    // bit-identically across a restore. MELONDS_JIT=0 falls back to the
+    // interpreter.
+    //
+    // The support matrix mirrors melonDS's own CMake: x86_64/aarch64
+    // only, and force-off on x86_64 macOS. Its cmake_dependent_option
+    // would silently override a `-DENABLE_JIT=ON` there, and the shim
+    // must agree with the core on JIT_ENABLED (it changes the NDS
+    // object's size), so the decision is made here and handed to CMake
+    // explicitly.
+    let jit_supported = matches!(target_arch.as_str(), "x86_64" | "aarch64")
+        && !(target_os == "macos" && target_arch == "x86_64");
+    let jit = jit_supported && std::env::var("MELONDS_JIT").map(|v| v != "0").unwrap_or(true);
+    println!("cargo:rerun-if-env-changed=MELONDS_JIT");
+
+    if target_os == "windows" {
+        build_windows(&manifest_dir, &out_dir, &melonds_dir, jit);
+    } else {
+        build_unix(&manifest_dir, &melonds_dir, &target_os, jit);
+    }
+
+    bindgen::Builder::default()
+        .header(manifest_dir.join("shim").join("shim.h").to_str().unwrap().to_owned())
+        .allowlist_item("Mds.*|mds_.*")
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .generate()
+        .expect("failed to generate bindings")
+        .write_to_file(out_dir.join("bindings.rs"))
+        .expect("failed to write bindings");
+
+    println!("cargo:rerun-if-changed=shim/shim.cpp");
+    println!("cargo:rerun-if-changed=shim/shim.h");
+    println!("cargo:rerun-if-changed=melonDS/src");
+}
+
+// ---------------------------------------------------------------------
+// Unix: everything static, one toolchain end to end.
+
+fn build_unix(manifest_dir: &Path, melonds_dir: &Path, target_os: &str, jit: bool) {
+    // The core static lib, as headless as it goes: no frontend, no
+    // OpenGL, no GDB stub. LTO'd archives only survive a link driven by
+    // the compiler that made them, and ours is driven by rustc — so
+    // plain objects.
+    let build_dir = cmake::Config::new(melonds_dir)
+        .profile("Release")
+        .define("BUILD_QT_SDL", "OFF")
+        .define("ENABLE_OGLRENDERER", "OFF")
+        .define("ENABLE_GDBSTUB", "OFF")
+        .define("ENABLE_JIT", if jit { "ON" } else { "OFF" })
+        .define("ENABLE_LTO_RELEASE", "OFF")
+        .define("ENABLE_LTO", "OFF")
+        .build_target("core")
+        .build()
+        .join("build");
+
+    // The shim, compiled here rather than through CMake. JIT_ENABLED is
+    // a PUBLIC compile definition on CMake's `core` target, so it has
+    // to be repeated by hand: without it the shim sees an NDS without
+    // its JIT members, allocates that smaller object, and the core's
+    // constructor writes past the end of it. That corruption presents
+    // as a SIGSEGV deep inside the ARMJIT constructor and looks nothing
+    // like an ABI mismatch. -fwrapv likewise is PUBLIC on `core`.
+    let mut shim = cc::Build::new();
+    shim.cpp(true)
+        .std("c++20")
+        .file(manifest_dir.join("shim/shim.cpp"))
+        .include(melonds_dir.join("src"))
+        .include(manifest_dir.join("shim"))
+        .flag("-fwrapv");
+    if jit {
+        shim.define("JIT_ENABLED", None);
+    }
+    // Emits the link-search + `static=melonds_shim` + C++ stdlib lines;
+    // the shim archive must precede the core's for single-pass linkers,
+    // so this comes first.
+    shim.compile("melonds_shim");
+
+    println!("cargo:rustc-link-search=native={}", build_dir.join("src").display());
+    println!("cargo:rustc-link-search=native={}", build_dir.join("src/teakra/src").display());
+    println!("cargo:rustc-link-lib=static=core");
+    println!("cargo:rustc-link-lib=static=teakra");
+    // The JIT's memory backend maps its fastmem arena with shm_open,
+    // which glibc < 2.34 keeps in librt.
+    if target_os == "linux" && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("gnu") {
+        println!("cargo:rustc-link-lib=dylib=rt");
+    }
+}
+
+// ---------------------------------------------------------------------
+// Windows: UCRT64-built DLL behind an MSVC import library.
 
 /// Root of an MSYS2 UCRT64 installation.
 fn ucrt64_root() -> PathBuf {
@@ -44,19 +150,7 @@ fn run(what: &str, cmd: &mut Command) {
     assert!(status.success(), "{what} failed with {status}");
 }
 
-fn main() {
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let melonds_dir = manifest_dir.join("melonDS");
-
-    // The JIT is on: interpreting four ARM cores cannot hold 60 fps for
-    // a link, and with the block-cache flush removed from the savestate
-    // load path (see the vendored NDS.cpp) a link still replays
-    // bit-identically across a restore. MELONDS_JIT=0 falls back to the
-    // interpreter.
-    let jit = std::env::var("MELONDS_JIT").map(|v| v != "0").unwrap_or(true);
-    println!("cargo:rerun-if-env-changed=MELONDS_JIT");
-
+fn build_windows(manifest_dir: &Path, out_dir: &Path, melonds_dir: &Path, jit: bool) {
     let ucrt = ucrt64_root();
     let bin = ucrt.join("bin");
     let (gcc, gpp) = (bin.join("gcc.exe"), bin.join("g++.exe"));
@@ -71,7 +165,7 @@ fn main() {
         "cmake configure",
         Command::new(&cmake)
             .arg("-S")
-            .arg(&melonds_dir)
+            .arg(melonds_dir)
             .arg("-B")
             .arg(&build_dir)
             .arg("-G")
@@ -172,17 +266,4 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=dylib=melonds_shim");
-
-    bindgen::Builder::default()
-        .header(manifest_dir.join("shim").join("shim.h").to_str().unwrap().to_owned())
-        .allowlist_item("Mds.*|mds_.*")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate()
-        .expect("failed to generate bindings")
-        .write_to_file(out_dir.join("bindings.rs"))
-        .expect("failed to write bindings");
-
-    println!("cargo:rerun-if-changed=shim/shim.cpp");
-    println!("cargo:rerun-if-changed=shim/shim.h");
-    println!("cargo:rerun-if-changed=melonDS/src");
 }
