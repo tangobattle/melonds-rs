@@ -176,6 +176,19 @@ LONG ARMJIT_Memory::ExceptionHandler(EXCEPTION_POINTERS* exceptionInfo)
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
+    // The handler is registered process-wide and first in line, so it
+    // sees every access violation on every thread — including ones
+    // raised before any core has run. NDS::Current is thread_local and
+    // only set on entry to RunFrame, so dereferencing it unconditionally
+    // faults inside the handler, which re-enters the handler, which
+    // faults again: the process dies of stack overflow instead of
+    // reporting the original error. Nothing to do with fastmem if no
+    // core is running here.
+    if (!NDS::Current)
+    {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
     u8* curArea = (u8*)(NDS::Current->CurCPU == 0 ? NDS::Current->JIT.Memory.FastMem9Start : NDS::Current->JIT.Memory.FastMem7Start);
     FaultDescription desc {};
     desc.EmulatedFaultAddr = (u8*)exceptionInfo->ExceptionRecord->ExceptionInformation[1] - curArea;
