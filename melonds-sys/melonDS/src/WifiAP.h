@@ -20,6 +20,7 @@
 #define WIFIAP_H
 
 #include "types.h"
+#include "Savestate.h"
 
 namespace melonDS
 {
@@ -37,6 +38,11 @@ public:
     static const u8 APChannel;
 
     void MSTimer();
+
+    // The AP keeps its own timers, sequence number and packet buffers,
+    // and it feeds the wifi RX path, so a savestate that omits it does
+    // not restore a running wifi session.
+    void DoSavestate(Savestate* file);
 
     // packet format: 12-byte TX header + original 802.11 frame
     int SendPacket(const u8* data, int len);

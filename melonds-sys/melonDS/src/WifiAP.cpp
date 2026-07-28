@@ -95,6 +95,18 @@ void WifiAP::Reset()
 }
 
 
+void WifiAP::DoSavestate(Savestate* file)
+{
+    file->Var64(&USCounter);
+    file->Var16(&SeqNo);
+    file->Bool32(&BeaconDue);
+    file->VarArray(PacketBuffer, sizeof(PacketBuffer));
+    file->Var32((u32*)&PacketLen);
+    file->Var32((u32*)&RXNum);
+    file->VarArray(LANBuffer, sizeof(LANBuffer));
+    file->Var32((u32*)&ClientStatus);
+}
+
 void WifiAP::MSTimer()
 {
     USCounter += 0x400;

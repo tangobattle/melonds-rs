@@ -542,7 +542,10 @@ fn main() {
                     nds.save_state(buf).expect("save_state");
                 }
                 air_state = Some(air.snapshot());
-                println!("rollback: captured pair + airwaves at frame {frame}");
+                println!(
+                    "rollback: captured pair + airwaves at frame {frame} (digest {})",
+                    pair_digest(&mut pair)
+                );
             }
             if frame == at + rollback_len {
                 let digest = pair_digest(&mut pair);
@@ -554,8 +557,39 @@ fn main() {
                             nds.load_state(buf).expect("load_state");
                         }
                         air.restore(air_state.as_ref().unwrap());
+                        // Is the restore itself exact? If RAM comes back
+                        // identical here, the loss is in non-RAM state
+                        // (wifi registers/timers) that steers execution.
+                        println!("rollback: digest right after restore {}", pair_digest(&mut pair));
+                        // Re-serialize and byte-compare: if the blobs
+                        // match, everything the savestate covers came
+                        // back, and the divergence lives in state the
+                        // savestate does not serialize at all.
+                        for (i, nds) in pair.iter_mut().enumerate() {
+                            let mut again = Vec::new();
+                            nds.save_state(&mut again).expect("save_state");
+                            let before = &pair_state[i];
+                            if again.len() != before.len() {
+                                println!("rollback: instance {i} state size {} -> {}", before.len(), again.len());
+                            } else {
+                                let diffs: Vec<usize> =
+                                    (0..again.len()).filter(|&k| again[k] != before[k]).take(8).collect();
+                                println!(
+                                    "rollback: instance {i} re-serialized {}",
+                                    if diffs.is_empty() {
+                                        "IDENTICAL".to_string()
+                                    } else {
+                                        format!("differs at offsets {diffs:x?} (of {} bytes)", again.len())
+                                    }
+                                );
+                            }
+                        }
                         replaying = true;
-                        frame = at;
+                        // The snapshot was taken AFTER frame `at` ran,
+                        // so the replay resumes at the next frame.
+                        // Resuming at `at` re-runs a frame the first
+                        // pass did not, which diverges by construction.
+                        frame = at + 1;
                         continue;
                     }
                     Some(ref first) => {

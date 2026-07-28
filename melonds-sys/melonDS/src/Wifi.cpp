@@ -313,6 +313,10 @@ void Wifi::DoSavestate(Savestate* file)
     file->Bool32(&IsMPClient);
     file->Var64(&NextSync);
     file->Var64(&RXTimestamp);
+
+    // The emulated AP runs (and injects into RXBuffer) whenever wifi is
+    // powered on, so its state belongs in the wifi savestate.
+    WifiAP->DoSavestate(file);
 }
 
 
