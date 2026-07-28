@@ -648,7 +648,12 @@ bool NDS::DoSavestate(Savestate* file)
         }
     }
 
-    file->VarArray(MainRAM, MainRAMMaxSize);
+    // Only the RAM this console actually has: DS mode masks to 4 MB
+    // while MainRAMMaxSize is the 16 MB DSi ceiling, so serializing the
+    // ceiling made every savestate 12 MB of zeroes. Both ends of a
+    // save/load pair derive the mask from the console type, which is
+    // fixed for the life of an instance, so the sizes always agree.
+    file->VarArray(MainRAM, MainRAMMask + 1);
     file->VarArray(SharedWRAM, SharedWRAMSize);
     file->VarArray(ARM7WRAM, ARM7WRAMSize);
 
