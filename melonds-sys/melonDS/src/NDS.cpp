@@ -769,7 +769,13 @@ bool NDS::DoSavestate(Savestate* file)
         Wifi.SetPowerCnt(PowerControl7 & 0x0002);
 
 #ifdef JIT_ENABLED
-        JIT.Reset();
+        // Deliberately NOT resetting the JIT here. Flushing the block
+        // cache on every load makes emulation depend on cache history:
+        // a replay after a restore runs cold while the first pass ran
+        // warm, and rollback needs the two to agree bit for bit. Blocks
+        // are invalidated by the normal write path when guest code
+        // changes, and a restore only ever reinstates memory this
+        // instance already executed from.
 #endif
     }
 
