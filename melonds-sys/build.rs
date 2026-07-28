@@ -1,57 +1,158 @@
+//! Builds melonDS and the embedding shim as a DLL, then links it.
+//!
+//! The core is compiled with **MSYS2 UCRT64** (melonDS's own recommended
+//! Windows toolchain) rather than MSVC, because the JIT is GCC/Clang
+//! code — GAS-syntax linkage stub, variable-length arrays, GNU
+//! declarations — that MSVC rejects outright. Two interpreted ARM cores
+//! per console cannot hold 60 fps for a link, so the JIT is not
+//! optional here.
+//!
+//! Mixing toolchains is safe because the seam is a **C ABI**: all C++
+//! lives inside the DLL, libgcc/libstdc++ are linked into it statically,
+//! and the Rust side (an `x86_64-pc-windows-msvc` build) sees plain C
+//! functions through an import library. That keeps this crate usable
+//! from a normal MSVC-target workspace with no toolchain migration.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Root of an MSYS2 UCRT64 installation.
+fn ucrt64_root() -> PathBuf {
+    if let Ok(dir) = std::env::var("UCRT64_ROOT") {
+        return PathBuf::from(dir);
+    }
+    for candidate in ["C:/msys64/ucrt64", "C:/msys32/ucrt64"] {
+        if Path::new(candidate).join("bin/g++.exe").exists() {
+            return PathBuf::from(candidate);
+        }
+    }
+    panic!(
+        "MSYS2 UCRT64 not found. Install it (pacman -S mingw-w64-ucrt-x86_64-gcc \
+         mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64-ninja) or set UCRT64_ROOT."
+    );
+}
+
+/// CMake parses `-D` values as strings, where a backslash starts an
+/// escape — so every path handed to it goes in with forward slashes.
+fn cmake_path(path: &Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
+
+fn run(what: &str, cmd: &mut Command) {
+    let status = cmd.status().unwrap_or_else(|e| panic!("failed to spawn {what}: {e}"));
+    assert!(status.success(), "{what} failed with {status}");
+}
+
 fn main() {
-    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let melonds_dir = manifest_dir.join("melonDS");
 
-    // LTO stays off: MSVC emits LTCG objects that the final Rust link
-    // (which does not pass /LTCG) cannot resolve.
-    // The core static lib, built exactly as headless as it goes: no
-    // frontend, no OpenGL, no GDB stub, and — not by choice — no JIT.
-    //
-    // melonDS gates the JIT on `cmake_dependent_option` over an
-    // ARCHITECTURE detected with check_symbol_exists("__x86_64__"),
-    // which is a GCC/Clang predefined macro that MSVC does not define.
-    // The condition therefore fails and the option is FORCED off, so
-    // -DENABLE_JIT=ON is silently ignored and no ARMJIT source compiles
-    // (verified: zero ARMJIT objects, and identical throughput with the
-    // flag on and off). Turning it on needs ARCHITECTURE forced plus an
-    // assembler MSVC accepts for ARMJIT_x64 — worth doing, since two
-    // interpreted ARM cores per console are what hold a link under
-    // realtime.
-    let dst = cmake::Config::new(&melonds_dir)
-        .define("BUILD_QT_SDL", "OFF")
-        .define("ENABLE_OGLRENDERER", "OFF")
-        .define("ENABLE_GDBSTUB", "OFF")
-        .define("ENABLE_JIT", "OFF")
-        .define("ENABLE_LTO_RELEASE", "OFF")
-        .define("DIRENT_INCLUDE_DIRS", melonds_dir.join("msvc-include"))
-        .profile("Release")
-        .build_target("core")
-        .build();
+    let ucrt = ucrt64_root();
+    let bin = ucrt.join("bin");
+    let (gcc, gpp) = (bin.join("gcc.exe"), bin.join("g++.exe"));
+    let cmake = bin.join("cmake.exe");
+    let path_with_ucrt = format!("{};{}", bin.display(), std::env::var("PATH").unwrap_or_default());
 
-    // Multi-config generators (Visual Studio) put libs under a
-    // per-config subdirectory; single-config ones (Ninja/Makefiles)
-    // don't. Probe both.
-    let build = dst.join("build");
+    // The core static lib, as headless as it goes: no frontend, no
+    // OpenGL, no GDB stub — and the JIT on, which is the whole reason
+    // for this toolchain.
+    let build_dir = out_dir.join("core-build");
+    run(
+        "cmake configure",
+        Command::new(&cmake)
+            .arg("-S")
+            .arg(&melonds_dir)
+            .arg("-B")
+            .arg(&build_dir)
+            .arg("-G")
+            .arg("Ninja")
+            .arg("-DCMAKE_BUILD_TYPE=Release")
+            .arg("-DBUILD_QT_SDL=OFF")
+            .arg("-DENABLE_OGLRENDERER=OFF")
+            .arg("-DENABLE_GDBSTUB=OFF")
+            .arg("-DENABLE_JIT=ON")
+            .arg(format!("-DCMAKE_C_COMPILER={}", cmake_path(&gcc)))
+            .arg(format!("-DCMAKE_CXX_COMPILER={}", cmake_path(&gpp)))
+            .arg(format!("-DCMAKE_MAKE_PROGRAM={}", cmake_path(&bin.join("ninja.exe"))))
+            .env("PATH", &path_with_ucrt),
+    );
+    run(
+        "cmake build",
+        Command::new(&cmake)
+            .arg("--build")
+            .arg(&build_dir)
+            .arg("--target")
+            .arg("core")
+            .env("PATH", &path_with_ucrt),
+    );
+
+    // The shim plus the core, linked into one DLL. libgcc/libstdc++ go
+    // in statically so running it needs nothing from MSYS2 on PATH.
+    let dll = out_dir.join("melonds_shim.dll");
+    let def = out_dir.join("melonds_shim.def");
+    run(
+        "link shim dll",
+        Command::new(&gpp)
+            .arg("-O2")
+            .arg("-std=c++20")
+            .arg("-shared")
+            .arg("-o")
+            .arg(&dll)
+            .arg(manifest_dir.join("shim/shim.cpp"))
+            .arg("-I")
+            .arg(melonds_dir.join("src"))
+            .arg("-I")
+            .arg(manifest_dir.join("shim"))
+            .arg(build_dir.join("src/libcore.a"))
+            .arg(build_dir.join("src/teakra/src/libteakra.a"))
+            // The JIT's memory backend wants the Windows 8 mapping APIs,
+            // which CMake asks for as MSVC's `onecore`; MinGW ships the
+            // same import set as `mincore`.
+            .args(["-lws2_32", "-lmincore", "-lbcrypt"])
+            .args(["-static-libgcc", "-static-libstdc++"])
+            // MinGW's --out-implib is a GNU-format archive the MSVC
+            // linker cannot read, so export a .def instead and let
+            // lib.exe turn it into a real import library below.
+            .arg(format!("-Wl,--output-def,{}", def.display()))
+            .env("PATH", &path_with_ucrt),
+    );
+
+    // The import library, built by MSVC from the DLL's own export list
+    // so an x86_64-pc-windows-msvc link accepts it. This also overwrites
+    // any stale static lib left in OUT_DIR by an earlier build.
+    let cl = cc::Build::new().get_compiler();
+    let lib_exe = cl.path().parent().expect("compiler has no directory").join("lib.exe");
+    run(
+        "lib.exe import library",
+        Command::new(&lib_exe)
+            .arg("/NOLOGO")
+            .arg("/MACHINE:X64")
+            .arg(format!("/DEF:{}", def.display()))
+            .arg(format!("/OUT:{}", out_dir.join("melonds_shim.lib").display())),
+    );
+
+    // Cargo links against the import library; the DLL has to sit beside
+    // the executable at runtime, which for cargo's layout means the
+    // profile directory a few levels above OUT_DIR (plus its examples/
+    // and deps/ subdirectories).
+    let profile_dir = out_dir
+        .ancestors()
+        .nth(3)
+        .expect("OUT_DIR is deeper than cargo's layout")
+        .to_path_buf();
     for dir in [
-        build.join("src").join("Release"),
-        build.join("src"),
-        build.join("src").join("teakra").join("src").join("Release"),
-        build.join("src").join("teakra").join("src"),
+        profile_dir.clone(),
+        profile_dir.join("examples"),
+        profile_dir.join("deps"),
     ] {
-        println!("cargo:rustc-link-search=native={}", dir.display());
+        if dir.exists() || std::fs::create_dir_all(&dir).is_ok() {
+            let _ = std::fs::copy(&dll, dir.join("melonds_shim.dll"));
+        }
     }
-    println!("cargo:rustc-link-lib=static=core");
-    println!("cargo:rustc-link-lib=static=teakra");
 
-    cc::Build::new()
-        .cpp(true)
-        .std("c++20")
-        .file("shim/shim.cpp")
-        .include(melonds_dir.join("src"))
-        .include("shim")
-        .flag_if_supported("/EHsc")
-        .compile("melonds_shim");
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=dylib=melonds_shim");
 
     bindgen::Builder::default()
         .header(manifest_dir.join("shim").join("shim.h").to_str().unwrap().to_owned())
