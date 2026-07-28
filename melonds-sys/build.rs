@@ -7,6 +7,13 @@
 //! per console cannot hold 60 fps for a link, so the JIT is not
 //! optional here.
 //!
+//! Status: the DLL boundary itself is sound — with the JIT off the core
+//! boots, emulates, and round-trips savestates bit-identically through
+//! it. With the JIT on, the process dies of stack overflow during
+//! construction (before a frame runs, and with fastmem both on and off,
+//! and on a 256 MB stack — so it is unbounded recursion in JIT init, not
+//! stack depth). Hence MELONDS_JIT, off by default.
+//!
 //! Mixing toolchains is safe because the seam is a **C ABI**: all C++
 //! lives inside the DLL, libgcc/libstdc++ are linked into it statically,
 //! and the Rust side (an `x86_64-pc-windows-msvc` build) sees plain C
@@ -48,6 +55,12 @@ fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let melonds_dir = manifest_dir.join("melonDS");
 
+    // The JIT is why this crate is built with UCRT64 at all, but it does
+    // not survive initialization yet (see below), so it is opt-in until
+    // it does: MELONDS_JIT=1.
+    let jit = std::env::var("MELONDS_JIT").map(|v| v != "0").unwrap_or(false);
+    println!("cargo:rerun-if-env-changed=MELONDS_JIT");
+
     let ucrt = ucrt64_root();
     let bin = ucrt.join("bin");
     let (gcc, gpp) = (bin.join("gcc.exe"), bin.join("g++.exe"));
@@ -71,7 +84,7 @@ fn main() {
             .arg("-DBUILD_QT_SDL=OFF")
             .arg("-DENABLE_OGLRENDERER=OFF")
             .arg("-DENABLE_GDBSTUB=OFF")
-            .arg("-DENABLE_JIT=ON")
+            .arg(if jit { "-DENABLE_JIT=ON" } else { "-DENABLE_JIT=OFF" })
             .arg(format!("-DCMAKE_C_COMPILER={}", cmake_path(&gcc)))
             .arg(format!("-DCMAKE_CXX_COMPILER={}", cmake_path(&gpp)))
             .arg(format!("-DCMAKE_MAKE_PROGRAM={}", cmake_path(&bin.join("ninja.exe"))))
