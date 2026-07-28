@@ -75,11 +75,29 @@ fn main() {
             Some((k, t)) => (k, Some(t)),
             None => (rest, tag),
         };
+        let (frames, mash) = match frames.strip_suffix('m') {
+            Some(f) => (f, true),
+            None => (frames, false),
+        };
         let frames: u32 = frames.parse().expect("bad frame count");
-        let keys = parse_keys(keys_str);
-        nds.set_keys(keys);
-        for _ in 0..frames {
+        // A step may be a stylus tap instead of keys: `<frames>xT<x>:<y>`
+        // holds the touch at bottom-screen coordinates for the step.
+        let touch = keys_str.strip_prefix('T').map(|xy| {
+            let (x, y) = xy.split_once(':').expect("touch step must be T<x>:<y>");
+            (x.parse::<u16>().unwrap(), y.parse::<u16>().unwrap())
+        });
+        let keys = if touch.is_some() { 0 } else { parse_keys(keys_str) };
+        if let Some((x, y)) = touch {
+            nds.touch(x, y);
+        }
+        for i in 0..frames {
+            // Mash steps alternate press/release so repeated confirms
+            // register as distinct presses.
+            nds.set_keys(if mash && (i / 8) % 2 == 1 { 0 } else { keys });
             nds.run_frame();
+        }
+        if touch.is_some() {
+            nds.release_screen();
         }
         total += frames;
         if let Some(tag) = tag {
@@ -88,4 +106,14 @@ fn main() {
     }
     println!("ran {total} frames, pc={:08x}", nds.pc());
     dump(&mut nds, &out_path);
+
+    // Persist the cart save alongside the screenshot so a scripted
+    // in-game save becomes a reusable .sav.
+    let sav = nds.save_memory();
+    if !sav.is_empty() {
+        let sav_path = out_path.with_extension("sav");
+        let nonzero = sav.iter().filter(|&&b| b != 0 && b != 0xff).count();
+        std::fs::write(&sav_path, &sav).unwrap();
+        println!("save memory: {} KiB ({} interesting bytes) -> {}", sav.len() >> 10, nonzero, sav_path.display());
+    }
 }

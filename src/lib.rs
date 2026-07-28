@@ -9,7 +9,7 @@
 //! the instance's `userdata`-like [`InstanceId`] so a host can tell its
 //! cores apart.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 /// Active-high key bits, DS KEYINPUT/KEYXY layout.
 pub mod keys {
@@ -48,54 +48,52 @@ pub struct InstanceId(pub u32);
 /// responding client's reply at `aid * 1024` into `data` and returns the
 /// bitmask of aids that replied.
 #[allow(unused_variables)]
-pub trait Host: Send {
-    fn log(&mut self, level: i32, msg: &str) {}
-    fn write_save(&mut self, inst: InstanceId, data: &[u8], writeoffset: u32, writelen: u32) {}
-    fn signal_stop(&mut self, inst: InstanceId, reason: i32) {}
+pub trait Host: Send + Sync {
+    fn log(&self, level: i32, msg: &str) {}
+    fn write_save(&self, inst: InstanceId, data: &[u8], writeoffset: u32, writelen: u32) {}
+    fn signal_stop(&self, inst: InstanceId, reason: i32) {}
 
-    fn mp_begin(&mut self, inst: InstanceId) {}
-    fn mp_end(&mut self, inst: InstanceId) {}
-    fn mp_send_packet(&mut self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
+    fn mp_begin(&self, inst: InstanceId) {}
+    fn mp_end(&self, inst: InstanceId) {}
+    fn mp_send_packet(&self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
         data.len() as i32
     }
-    fn mp_recv_packet(&mut self, inst: InstanceId, data: &mut [u8], timestamp: &mut u64) -> Option<i32> {
+    fn mp_recv_packet(&self, inst: InstanceId, data: &mut [u8], timestamp: &mut u64) -> Option<i32> {
         Some(0)
     }
-    fn mp_send_cmd(&mut self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
+    fn mp_send_cmd(&self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
         data.len() as i32
     }
-    fn mp_send_reply(&mut self, inst: InstanceId, data: &[u8], timestamp: u64, aid: u16) -> i32 {
+    fn mp_send_reply(&self, inst: InstanceId, data: &[u8], timestamp: u64, aid: u16) -> i32 {
         data.len() as i32
     }
-    fn mp_send_ack(&mut self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
+    fn mp_send_ack(&self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
         data.len() as i32
     }
-    fn mp_recv_host_packet(&mut self, inst: InstanceId, data: &mut [u8], timestamp: &mut u64) -> Option<i32> {
+    fn mp_recv_host_packet(&self, inst: InstanceId, data: &mut [u8], timestamp: &mut u64) -> Option<i32> {
         None
     }
-    fn mp_recv_replies(&mut self, inst: InstanceId, data: &mut [u8], timestamp: u64, aidmask: u16) -> u16 {
+    fn mp_recv_replies(&self, inst: InstanceId, data: &mut [u8], timestamp: u64, aidmask: u16) -> u16 {
         0
     }
 }
 
-static HOST: OnceLock<Mutex<Box<dyn Host>>> = OnceLock::new();
+static HOST: OnceLock<Box<dyn Host + Send + Sync>> = OnceLock::new();
 
 /// Receive buffers are sized for the biggest frame the wifi hardware
 /// moves (see melonDS `kMaxFrameSize` = 0x948); recv_replies packs up to
 /// 16 aid slots of 1024 bytes.
 const RECV_BUF: usize = 16 * 1024;
 
-fn with_host<R>(f: impl FnOnce(&mut dyn Host) -> R) -> Option<R> {
-    let host = HOST.get()?;
-    let mut host = host.lock().unwrap();
-    Some(f(&mut **host))
+fn with_host<R>(f: impl FnOnce(&dyn Host) -> R) -> Option<R> {
+    Some(f(&**HOST.get()?))
 }
 
 /// Install the process-global [`Host`]. May be called once; later calls
 /// return the rejected host as an error.
-pub fn install_host(host: Box<dyn Host>) -> Result<(), Box<dyn Host>> {
+pub fn install_host(host: Box<dyn Host + Send + Sync>) -> Result<(), Box<dyn Host + Send + Sync>> {
     let mut candidate = Some(host);
-    HOST.get_or_init(|| Mutex::new(candidate.take().unwrap()));
+    HOST.get_or_init(|| candidate.take().unwrap());
     match candidate {
         None => {
             unsafe {
