@@ -71,17 +71,9 @@ MdsNds* mds_nds_new(const uint8_t* rom, uint32_t rom_len, const uint8_t* save, u
     // cannot hold 60 fps for a link. A savestate load flushes the block
     // cache, so rollback pays a recompile, but that is far cheaper than
     // interpreting every tick.
-    // Fast memory maps the guest address space and catches the faults
-    // with a handler installed by the core's own toolchain. The core is
-    // built with MinGW while the host process is MSVC, and that handler
-    // does not take effect across the boundary — the first guest access
-    // faults, the handler never runs, and the process dies of stack
-    // overflow. The JIT itself is what matters for speed, so keep it and
-    // take the slower, portable memory path.
-    JITArgs jit {};
-    jit.FastMemory = false;
-    args.JIT = jit;
-
+    // Fast memory is on: it maps the guest address space and catches
+    // stray accesses with a fault handler, which is the difference
+    // between a JIT that guards every load and one that does not.
     args.Firmware = Firmware(0);
 
     // Uniquify the generated firmware's MAC per instance, mirroring

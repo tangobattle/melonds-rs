@@ -7,13 +7,7 @@
 //! per console cannot hold 60 fps for a link, so the JIT is not
 //! optional here.
 //!
-//! Status: the DLL boundary itself is sound — with the JIT off the core
-//! boots, emulates, and round-trips savestates bit-identically through
-//! it. With the JIT on, the process dies of stack overflow during
-//! construction (before a frame runs, and with fastmem both on and off,
-//! and on a 256 MB stack — so it is unbounded recursion in JIT init, not
-//! stack depth). Hence MELONDS_JIT, off by default.
-//!
+
 //! Mixing toolchains is safe because the seam is a **C ABI**: all C++
 //! lives inside the DLL, libgcc/libstdc++ are linked into it statically,
 //! and the Rust side (an `x86_64-pc-windows-msvc` build) sees plain C
@@ -55,10 +49,9 @@ fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let melonds_dir = manifest_dir.join("melonDS");
 
-    // The JIT is why this crate is built with UCRT64 at all, but it does
-    // not survive initialization yet (see below), so it is opt-in until
-    // it does: MELONDS_JIT=1.
-    let jit = std::env::var("MELONDS_JIT").map(|v| v != "0").unwrap_or(false);
+    // The JIT is why this crate is built with UCRT64 at all. Opt out
+    // with MELONDS_JIT=0 if a build ever needs the interpreter.
+    let jit = std::env::var("MELONDS_JIT").map(|v| v != "0").unwrap_or(true);
     println!("cargo:rerun-if-env-changed=MELONDS_JIT");
 
     let ucrt = ucrt64_root();
@@ -117,6 +110,16 @@ fn main() {
             .arg(melonds_dir.join("src"))
             .arg("-I")
             .arg(manifest_dir.join("shim"))
+            // JIT_ENABLED is a PUBLIC compile definition on CMake's
+            // `core` target, so every translation unit that includes
+            // NDS.h must have it. The shim is compiled here rather than
+            // through CMake, so it has to be repeated by hand: without
+            // it the shim sees an NDS without its JIT members, allocates
+            // that smaller object, and the core's constructor writes
+            // past the end of it. That corruption presents as a SIGSEGV
+            // deep inside the ARMJIT constructor and looks nothing like
+            // an ABI mismatch.
+            .args(if jit { &["-DJIT_ENABLED"][..] } else { &[][..] })
             .arg(build_dir.join("src/libcore.a"))
             .arg(build_dir.join("src/teakra/src/libteakra.a"))
             // The JIT's memory backend wants the Windows 8 mapping APIs,
