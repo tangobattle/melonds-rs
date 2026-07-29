@@ -49,7 +49,14 @@ namespace melonDS
 {
 using namespace Platform;
 
-const s32 kMaxIterationCycles = 64;
+// 256 rather than melonDS's stock 64: the cap bounds how far the ARM9
+// runs ahead of the ARM7 per main-loop slice, and at 64 the loop turns
+// ~8,700 iterations per frame with the JIT capped at ~130 ARM9 cycles
+// a slice — the scheduler ceremony around each slice cost more than a
+// third of a frame. 256 keeps the CPUs within ~7.6us of each other,
+// which the one cart this core exists to run is comfortable with, and
+// takes the slice count down to the events that actually occur.
+const s32 kMaxIterationCycles = 256;
 const s32 kIterationCycleMargin = 8;
 
 // timing notes
