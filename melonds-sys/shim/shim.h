@@ -98,8 +98,29 @@ void mds_arm9_write32(MdsNds* nds, uint32_t addr, uint32_t val);
 void mds_arm9_write16(MdsNds* nds, uint32_t addr, uint16_t val);
 void mds_arm9_write8(MdsNds* nds, uint32_t addr, uint8_t val);
 
-// The ARM9 program counter (r15) — for trap-anchor scouting.
+// The address of the instruction the ARM9 is about to execute — for
+// trap-anchor scouting, and what a trap handler sees as its site.
 uint32_t mds_arm9_pc(MdsNds* nds);
+
+// Whether the ARM9 is executing Thumb — which is what decides bit 0 of
+// a mds_arm9_jump target.
+int mds_arm9_thumb(MdsNds* nds);
+
+// Redirect the ARM9. `addr` is an interworking address: bit 0 set means
+// Thumb, exactly as BX reads it. Called from inside a trap handler this
+// replaces the trapped instruction with a jump; called outside one it
+// takes effect immediately, mid-frame.
+void mds_arm9_jump(MdsNds* nds, uint32_t addr);
+
+// Fire `fn` just before the ARM9 executes any of `count` addresses.
+// Handlers may read and write memory and may mds_arm9_jump. The address
+// the handler receives is authoritative: the core filters cheaply and
+// may pass an address that was never registered, so dispatch on it
+// exactly. Passing count 0 removes the traps. Not saved in savestates:
+// what the host installs now survives a state load, which is what
+// rollback re-simulation wants.
+typedef void (*MdsTrapFn)(void* userdata, uint32_t addr);
+void mds_set_traps(MdsNds* nds, const uint32_t* addrs, uint32_t count, MdsTrapFn fn, void* userdata);
 
 // Emulated system-clock cycle count (33.513982 MHz domain) — the
 // lockstep coordinator's notion of instance progress.

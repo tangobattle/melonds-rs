@@ -180,7 +180,39 @@ void mds_arm9_write8(MdsNds* w, uint32_t addr, uint8_t val) { w->nds->ARM9Write8
 
 uint32_t mds_arm9_pc(MdsNds* w)
 {
-    return w->nds->GetPC(0);
+    // R[15] is the prefetch pointer, two instructions ahead of the one
+    // about to run. Back it off so this reports the instruction's own
+    // address — which is what a trap site is, so a handler asking where
+    // it is gets the address it registered.
+    auto& cpu = w->nds->ARM9;
+    return cpu.R[15] - ((cpu.CPSR & 0x20) ? 2 : 4);
+}
+
+int mds_arm9_thumb(MdsNds* w)
+{
+    return (w->nds->ARM9.CPSR & 0x20) ? 1 : 0;
+}
+
+void mds_arm9_jump(MdsNds* w, uint32_t addr)
+{
+    w->nds->ARM9.JumpTo(addr);
+}
+
+void mds_set_traps(MdsNds* w, const uint32_t* addrs, uint32_t count, MdsTrapFn fn, void* userdata)
+{
+    w->nds->ARM9.SetTraps(addrs, count, reinterpret_cast<melonDS::ARM::TrapFn>(fn), userdata);
+
+#ifdef JIT_ENABLED
+    // Traps live in the interpreter's instruction loop, so the JIT has
+    // to stand down while any are installed — a compiled block runs
+    // straight past them. Turning it off resets the block cache, and
+    // turning it back on starts a fresh one, so no block outlives the
+    // switch and the two modes never disagree about what is compiled.
+    //
+    // This is why traps are a priming tool: priming runs interpreted and
+    // is short, and clearing the traps hands the match back to the JIT.
+    w->nds->SetJITArgs(count ? std::nullopt : std::optional<JITArgs>(JITArgs()));
+#endif
 }
 
 uint64_t mds_sys_timestamp(MdsNds* w)

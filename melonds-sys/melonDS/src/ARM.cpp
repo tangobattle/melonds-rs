@@ -291,6 +291,20 @@ void ARM::SetupCodeMem(u32 addr)
     }
 }
 
+void ARM::SetTraps(const u32* addrs, u32 count, TrapFn fn, void* userdata)
+{
+    memset(TrapFilter, 0, sizeof(TrapFilter));
+    for (u32 i = 0; i < count; i++)
+    {
+        u32 bit = (addrs[i] >> 1) & 0xffff;
+        TrapFilter[bit >> 3] |= 1 << (bit & 7);
+    }
+    // Set the handler last: it is what arms the check, so a partially
+    // built filter is never live.
+    TrapUserdata = userdata;
+    TrapHandler = count ? fn : nullptr;
+}
+
 void ARMv5::JumpTo(u32 addr, bool restorecpsr)
 {
     if (restorecpsr)
@@ -662,6 +676,10 @@ void ARMv5::Execute()
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
                     GdbCheckC();
 
+                // A trap here may JumpTo() elsewhere; the prefetch below
+                // then picks up the target rather than this instruction.
+                CheckTrap(R[15] - 2);
+
                 // prefetch
                 R[15] += 2;
                 CurInstr = NextInstr[0];
@@ -677,6 +695,8 @@ void ARMv5::Execute()
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
                     GdbCheckC();
+
+                CheckTrap(R[15] - 4);
 
                 // prefetch
                 R[15] += 4;

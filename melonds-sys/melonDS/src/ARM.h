@@ -134,6 +134,33 @@ public:
 
     void SetupCodeMem(u32 addr);
 
+    // Host execution traps.
+    //
+    // The handler fires just before the instruction at a registered
+    // address executes, seeing the state that instruction is about to
+    // see. A handler may JumpTo() to redirect: JumpTo refills the
+    // pipeline so that the interpreter's own prefetch then runs the
+    // *target* instruction, which is why a redirected trap simply falls
+    // through and never runs the instruction it displaced.
+    //
+    // Host state, deliberately outside DoSavestate: restoring a
+    // savestate keeps whatever the host has installed now rather than
+    // resurrecting a stale trap set.
+    typedef void (*TrapFn)(void* userdata, u32 addr);
+
+    void SetTraps(const u32* addrs, u32 count, TrapFn fn, void* userdata);
+
+    // Cheap enough for the interpreter's inner loop: one bit test
+    // against a filter keyed on the address. A filter collision costs
+    // only a spurious callback, which the host drops by exact address.
+    void CheckTrap(u32 addr)
+    {
+        if (!TrapHandler) return;
+        u32 i = (addr >> 1) & 0xffff;
+        if (!(TrapFilter[i >> 3] & (1 << (i & 7)))) return;
+        TrapHandler(TrapUserdata, addr);
+    }
+
 
     virtual void DataRead8(u32 addr, u32* val) = 0;
     virtual void DataRead16(u32 addr, u32* val) = 0;
@@ -194,6 +221,12 @@ public:
 #ifdef GDBSTUB_ENABLED
     Gdb::GdbStub GdbStub;
 #endif
+
+    // See SetTraps/CheckTrap. Null handler means no traps installed,
+    // which is the one branch the inner loop pays for when unused.
+    TrapFn TrapHandler = nullptr;
+    void* TrapUserdata = nullptr;
+    u8 TrapFilter[0x10000 / 8] = {};
 
     melonDS::NDS& NDS;
 protected:

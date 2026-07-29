@@ -257,6 +257,38 @@ static VTABLE: melonds_sys::MdsHostVtable = melonds_sys::MdsHostVtable {
 pub struct Nds {
     ptr: *mut melonds_sys::MdsNds,
     state_buf_hint: usize,
+    /// Kept alive for as long as the core holds a pointer to it; see
+    /// [`Nds::set_traps`].
+    traps: Option<Box<TrapTable>>,
+}
+
+/// What a trap trampoline needs: the handlers, by address, and a way
+/// back to the instance so a handler can be handed one.
+struct TrapTable {
+    handlers: std::collections::HashMap<u32, Box<dyn FnMut(&mut Nds)>>,
+    ptr: *mut melonds_sys::MdsNds,
+}
+
+unsafe extern "C" fn trap_trampoline(userdata: *mut std::ffi::c_void, addr: u32) {
+    let table = &mut *(userdata as *mut TrapTable);
+    // The core's address filter is approximate and may offer an address
+    // that was never registered, so an unknown one is simply not ours.
+    let Some(handler) = table.handlers.get_mut(&addr) else {
+        return;
+    };
+    // A borrow of the instance for the length of the handler. The core
+    // is inside `run_frame` on this same instance, so this is the one
+    // place an `&mut Nds` is manufactured rather than passed down; the
+    // handler may do anything a caller could except run another frame.
+    let mut nds = Nds {
+        ptr: table.ptr,
+        state_buf_hint: 0,
+        traps: None,
+    };
+    handler(&mut nds);
+    // The borrowed wrapper must not free the instance or disarm the
+    // traps it was called from.
+    std::mem::forget(nds);
 }
 
 // The core's only cross-instance state is a thread_local re-pinned on
@@ -299,7 +331,62 @@ impl Nds {
         Ok(Nds {
             ptr,
             state_buf_hint: 0,
+            traps: None,
         })
+    }
+
+    /// Install execution traps: `handler` runs just before the ARM9
+    /// executes any of `addrs`, and is told which address it stopped
+    /// at. A handler may read and write memory and may
+    /// [`jump`](Self::jump) to redirect execution, which is how a
+    /// caller walks the game through its own code instead of pressing
+    /// its buttons.
+    ///
+    /// Traps run the ARM9 interpreted — the JIT would run straight past
+    /// them — so this is a tool for short scripted stretches like
+    /// priming, not for a whole match. Passing an empty list removes
+    /// them and hands the ARM9 back to the JIT.
+    ///
+    /// Traps are host state: they are not written to savestates, so a
+    /// [`load_state`](Self::load_state) keeps whatever is installed now.
+    pub fn set_traps(&mut self, traps: Vec<(u32, Box<dyn FnMut(&mut Nds)>)>) {
+        let addrs: Vec<u32> = traps.iter().map(|(addr, _)| *addr).collect();
+        let table = Box::new(TrapTable {
+            handlers: traps.into_iter().collect(),
+            ptr: self.ptr,
+        });
+        unsafe {
+            melonds_sys::mds_set_traps(
+                self.ptr,
+                addrs.as_ptr(),
+                addrs.len() as u32,
+                if addrs.is_empty() { None } else { Some(trap_trampoline) },
+                &*table as *const TrapTable as *mut std::ffi::c_void,
+            )
+        };
+        // Dropped only once the core is no longer pointing at it.
+        self.traps = (!addrs.is_empty()).then_some(table);
+    }
+
+    /// Whether the ARM9 is executing Thumb, which is what decides bit 0
+    /// of a [`jump`](Self::jump) target.
+    pub fn thumb(&mut self) -> bool {
+        unsafe { melonds_sys::mds_arm9_thumb(self.ptr) != 0 }
+    }
+
+    /// Redirect the ARM9. `addr` is an interworking address — bit 0 set
+    /// means Thumb, exactly as `BX` reads it. Called from a trap
+    /// handler, this replaces the trapped instruction with a jump.
+    pub fn jump(&mut self, addr: u32) {
+        unsafe { melonds_sys::mds_arm9_jump(self.ptr, addr) }
+    }
+
+    /// Redirect the ARM9 within the instruction set it is already
+    /// running — the common case for a handler steering the game
+    /// through its own code.
+    pub fn jump_here(&mut self, addr: u32) {
+        let thumb = self.thumb();
+        self.jump(addr | u32::from(thumb));
     }
 
     /// Pin the cart RTC to a fixed date/time. Call before [`boot`](Self::boot).
