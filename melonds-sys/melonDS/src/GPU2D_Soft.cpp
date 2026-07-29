@@ -40,6 +40,10 @@ void SoftRenderer2D::Reset()
     memset(OBJWindow, 0, sizeof(OBJWindow));
 
     NumSprites = 0;
+    SpritePrioOnLine = 0;
+    SpriteBlendOnLine = false;
+    SpriteXMin = 256;
+    SpriteXMax = 0;
 }
 
 u32 SoftRenderer2D::ColorComposite(int i, u32 val1, u32 val2) const
@@ -235,7 +239,7 @@ void SoftRenderer2D::DrawScanlineBGMode(u32 line)
                     DoDrawBG(Text, line, 0);
             }
         }
-        if ((GPU2D.LayerEnable & (1<<4)) && NumSprites)
+        if ((GPU2D.LayerEnable & (1<<4)) && (SpritePrioOnLine & (1<<i)))
         {
             InterleaveSprites(i);
         }
@@ -264,7 +268,7 @@ void SoftRenderer2D::DrawScanlineBGMode6(u32 line)
                     DrawBG_3D();
             }
         }
-        if ((GPU2D.LayerEnable & (1<<4)) && NumSprites)
+        if ((GPU2D.LayerEnable & (1<<4)) && (SpritePrioOnLine & (1<<i)))
         {
             InterleaveSprites(i);
         }
@@ -296,15 +300,33 @@ void SoftRenderer2D::DrawScanlineBGMode7(u32 line)
                     DoDrawBG(Text, line, 0);
             }
         }
-        if ((GPU2D.LayerEnable & (1<<4)) && NumSprites)
+        if ((GPU2D.LayerEnable & (1<<4)) && (SpritePrioOnLine & (1<<i)))
         {
             InterleaveSprites(i);
         }
     }
 }
 
+    // Whether the color-effect pass can touch any pixel on this line.
+    // BLDCNT alone decides for the effect modes; sprite-forced and
+    // 3D-forced blending additionally need such a top pixel to exist,
+    // which the sprite pass has already ruled on for this line. When
+    // nothing can fire, the composite is a straight copy of the top
+    // layer and the bottom layer is never even read.
+static bool CompositeIsIdentity(u32 blendCnt, bool spriteBlend, bool has3D)
+{
+    u32 mode = (blendCnt >> 6) & 0x3;
+    bool modesIdle = (mode == 0)
+        || (mode == 1 && (blendCnt & 0x3F00) == 0)
+        || (mode >= 2 && (blendCnt & 0x3F) == 0);
+    return modesIdle && (((blendCnt & 0x3F00) == 0) || (!spriteBlend && !has3D));
+}
+
 void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
 {
+    bool has3d = (GPU2D.Num == 0) && (GPU2D.DispCnt & 0x8) && (GPU2D.LayerEnable & 0x1);
+    bool identity = CompositeIsIdentity(GPU2D.BlendCnt, SpriteBlendOnLine, has3d);
+
     u64 backdrop;
     if (GPU2D.Num)
         backdrop = *(u16*)&GPU.Palette[0x400];
@@ -321,8 +343,9 @@ void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
 
         for (int i = 0; i < 256; i+=2)
             *(u64*)&BGOBJLine[i] = backdrop;
-        for (int i = 256; i < 512; i+=2)
-            *(u64*)&BGOBJLine[i] = 0;
+        if (!identity)
+            for (int i = 256; i < 512; i+=2)
+                *(u64*)&BGOBJLine[i] = 0;
     }
 
     if (GPU2D.DispCnt & 0xE000)
@@ -346,7 +369,11 @@ void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
     }
 
     // color special effects
-    // can likely be optimized
+    if (identity)
+    {
+        memcpy(dst, BGOBJLine, 256 * sizeof(u32));
+        return;
+    }
 
     for (int i = 0; i < 256; i++)
     {
@@ -385,6 +412,9 @@ void SoftRenderer2D::DrawBG_3D()
 template<bool mosaic>
 void SoftRenderer2D::DrawBG_Text(u32 line, u32 bgnum)
 {
+    if constexpr (!mosaic)
+        return DrawBG_Text_Fast(line, bgnum);
+
     // workaround for backgrounds missing on aarch64 with lto build
 #if defined(__GNUC__) || defined(__clang__)
     asm volatile ("" : : : "memory");
@@ -553,6 +583,161 @@ void SoftRenderer2D::DrawBG_Text(u32 line, u32 bgnum)
             }
 
             xoff++;
+        }
+    }
+}
+
+// The non-mosaic text BG, drawn a tile row at a time: one load fetches
+// the row's eight pixel indices, a fully transparent row is skipped
+// outright — most cels on most layers — and an opaque one is walked
+// out of a register instead of through eight masked VRAM reads. Pixel
+// output is bit-identical to the per-pixel path above.
+void SoftRenderer2D::DrawBG_Text_Fast(u32 line, u32 bgnum)
+{
+    u16 bgcnt = GPU2D.BGCnt[bgnum];
+
+    u32 tilesetaddr, tilemapaddr;
+    u16* pal;
+    u32 extpal, extpalslot;
+
+    u16 xoff = GPU2D.BGXPos[bgnum];
+    u16 yoff = GPU2D.BGYPos[bgnum];
+
+    // Mosaic enabled with a zero mosaic size lands here too, and still
+    // takes its Y from the latched mosaic line.
+    if (bgcnt & (1<<6))
+        yoff += GPU2D.BGMosaicLine;
+    else
+        yoff += line;
+
+    u32 widexmask = (bgcnt & (1<<14)) ? 0x100 : 0;
+
+    extpal = (GPU2D.DispCnt & (1<<30));
+    if (extpal) extpalslot = ((bgnum<2) && (bgcnt&0x2000)) ? (2+bgnum) : bgnum;
+
+    u8* bgvram;
+    u32 bgvrammask;
+    GPU2D.GetBGVRAM(bgvram, bgvrammask);
+    if (GPU2D.Num)
+    {
+        tilesetaddr = ((bgcnt & 0x003C) << 12);
+        tilemapaddr = ((bgcnt & 0x1F00) << 3);
+
+        pal = (u16*)&GPU.Palette[0x400];
+    }
+    else
+    {
+        tilesetaddr = ((GPU2D.DispCnt & 0x07000000) >> 8) + ((bgcnt & 0x003C) << 12);
+        tilemapaddr = ((GPU2D.DispCnt & 0x38000000) >> 11) + ((bgcnt & 0x1F00) << 3);
+
+        pal = (u16*)&GPU.Palette[0];
+    }
+
+    // adjust Y position in tilemap
+    if (bgcnt & (1<<15))
+    {
+        tilemapaddr += ((yoff & 0x1F8) << 3);
+        if (bgcnt & (1<<14))
+            tilemapaddr += ((yoff & 0x100) << 3);
+    }
+    else
+        tilemapaddr += ((yoff & 0xF8) << 3);
+
+    u32 yrow = yoff & 0x7;
+    u32 flag = 0x01000000 << bgnum;
+    u8 winbit = 1 << bgnum;
+
+    if (bgcnt & (1<<7))
+    {
+        // 256-color: a tile row is eight bytes. Both the tileset base
+        // and the row offset are multiples of eight, so the masked
+        // eight-byte load can't straddle the VRAM wrap the per-pixel
+        // path's masking expresses.
+        int i = 0;
+        while (i < 256)
+        {
+            u32 xpos = xoff + (u32)i;
+            u32 tx = xpos & 0x7;
+            int len = 8 - (int)tx;
+            if (i + len > 256) len = 256 - i;
+
+            u16 curtile = *(u16*)&bgvram[(tilemapaddr + ((xpos & 0xF8) >> 2) + ((xpos & widexmask) << 3)) & bgvrammask];
+            u32 pixelsaddr = tilesetaddr + ((curtile & 0x03FF) << 6)
+                                         + (((curtile & (1<<11)) ? (7-yrow) : yrow) << 3);
+            u64 row = *(u64*)&bgvram[pixelsaddr & bgvrammask];
+            if (row == 0)
+            {
+                i += len;
+                continue;
+            }
+            if (curtile & (1<<10)) // xflip
+                row = __builtin_bswap64(row);
+
+            u16* curpal;
+            if (extpal) curpal = GPU2D.GetBGExtPal(extpalslot, curtile>>12);
+            else        curpal = pal;
+
+            row >>= (tx << 3);
+            u32* first = &BGOBJLine[i];
+            u32* second = first + 256;
+            for (int k = 0; k < len; k++, row >>= 8)
+            {
+                u8 color = (u8)row;
+                bool draw = color && (WindowMask[i+k] & winbit);
+                u16 c = curpal[color];
+                u32 nf = ((c & 0x001F) << 1) | (((c & 0x03E0) >> 4) << 8)
+                       | ((c & 0x8000) ? 0x100 : 0) | (((c & 0x7C00) >> 9) << 16) | flag;
+                u32 f = first[k];
+                second[k] = draw ? f : second[k];
+                first[k] = draw ? nf : f;
+            }
+            i += len;
+        }
+    }
+    else
+    {
+        // 16-color: a tile row is four bytes of nibbles, low nibble
+        // leftmost; alignment argument as above, in fours.
+        int i = 0;
+        while (i < 256)
+        {
+            u32 xpos = xoff + (u32)i;
+            u32 tx = xpos & 0x7;
+            int len = 8 - (int)tx;
+            if (i + len > 256) len = 256 - i;
+
+            u16 curtile = *(u16*)&bgvram[(tilemapaddr + ((xpos & 0xF8) >> 2) + ((xpos & widexmask) << 3)) & bgvrammask];
+            u32 pixelsaddr = tilesetaddr + ((curtile & 0x03FF) << 5)
+                                         + (((curtile & (1<<11)) ? (7-yrow) : yrow) << 2);
+            u32 row = *(u32*)&bgvram[pixelsaddr & bgvrammask];
+            if (row == 0)
+            {
+                i += len;
+                continue;
+            }
+            if (curtile & (1<<10)) // xflip: reverse the eight nibbles
+            {
+                row = __builtin_bswap32(row);
+                row = ((row & 0x0F0F0F0F) << 4) | ((row >> 4) & 0x0F0F0F0F);
+            }
+
+            u16* curpal = pal + ((curtile & 0xF000) >> 8);
+
+            row >>= (tx << 2);
+            u32* first = &BGOBJLine[i];
+            u32* second = first + 256;
+            for (int k = 0; k < len; k++, row >>= 4)
+            {
+                u8 color = row & 0xF;
+                bool draw = color && (WindowMask[i+k] & winbit);
+                u16 c = curpal[color];
+                u32 nf = ((c & 0x001F) << 1) | (((c & 0x03E0) >> 4) << 8)
+                       | ((c & 0x8000) ? 0x100 : 0) | (((c & 0x7C00) >> 9) << 16) | flag;
+                u32 f = first[k];
+                second[k] = draw ? f : second[k];
+                first[k] = draw ? nf : f;
+            }
+            i += len;
         }
     }
 }
@@ -954,6 +1139,9 @@ void SoftRenderer2D::ApplySpriteMosaicX()
 
     u8 mosw = GPU2D.OBJMosaicSize[0];
     if (mosw == 0) return;
+    // No sprite on this line can produce an opaque pixel — latching
+    // would only shuffle values InterleaveSprites never reads.
+    if (!SpritePrioOnLine) return;
 
     u8 mosx = 0;
     u32 latchcolor;
@@ -989,7 +1177,7 @@ void SoftRenderer2D::InterleaveSprites(u32 prio)
     u16* pal = (u16*)&GPU.Palette[GPU2D.Num ? 0x600 : 0x200];
     u16* extpal = GPU2D.GetOBJExtPal();
 
-    for (u32 i = 0; i < 256; i++)
+    for (s32 i = SpriteXMin; i < SpriteXMax; i++)
     {
         if ((OBJLine[i] & OBJ_OpaPrioMask) != attrmask)
             continue;
@@ -1023,6 +1211,65 @@ void SoftRenderer2D::InterleaveSprites(u32 prio)
         } \
     } while (0)
 
+static const s32 SpriteWidthTable[16] =
+{
+    8, 16, 8, 8,
+    16, 32, 8, 8,
+    32, 32, 16, 8,
+    64, 64, 32, 8
+};
+static const s32 SpriteHeightTable[16] =
+{
+    8, 8, 16, 8,
+    16, 8, 32, 8,
+    32, 16, 32, 8,
+    64, 32, 64, 8
+};
+
+// The per-line accept set — sprite enabled, horizontally on screen,
+// vertically covering the line — as a bitmask per line, from one pass
+// over the OAM half instead of a 128-entry scan every line.
+void SoftRenderer2D::BuildSpriteLineMask()
+{
+    memset(SpriteLineMask, 0, sizeof(SpriteLineMask));
+
+    u16* oam = (u16*)&GPU.OAM[GPU2D.Num ? 0x400 : 0];
+
+    for (int sprnum = 0; sprnum < 128; sprnum++)
+    {
+        u16* attrib = &oam[sprnum*4];
+
+        u16 sprtype = (attrib[0] >> 8) & 0x3;
+        if (sprtype == 2) // disabled
+            continue;
+
+        u32 sizeparam = (attrib[0] >> 14) | ((attrib[1] & 0xC000) >> 12);
+        s32 boundwidth = SpriteWidthTable[sizeparam];
+        s32 boundheight = SpriteHeightTable[sizeparam];
+        if (sprtype == 3) // double-size rotscale sprite
+        {
+            boundwidth <<= 1;
+            boundheight <<= 1;
+        }
+
+        s32 xpos = (s32)(attrib[1] << 23) >> 23;
+        if (xpos <= -boundwidth)
+            continue;
+
+        s32 ypos = attrib[0] & 0xFF;
+        u64 bit = 1ull << (sprnum & 0x3F);
+        int word = sprnum >> 6;
+        for (s32 l = 0; l < boundheight; l++)
+        {
+            s32 y = (ypos + l) & 0xFF;
+            if (y < 192)
+                SpriteLineMask[y][word] |= bit;
+        }
+    }
+
+    SpriteLineMaskValid = true;
+}
+
 void SoftRenderer2D::DrawSprites(u32 line)
 {
     // the OBJ buffers don't get updated at all if the 2D engine is disabled
@@ -1041,7 +1288,13 @@ void SoftRenderer2D::DrawSprites(u32 line)
     }
 
     NumSprites = 0;
-    memset(OBJLine, 0, sizeof(OBJLine));
+    SpritePrioOnLine = 0;
+    SpriteBlendOnLine = false;
+    SpriteXMin = 256;
+    SpriteXMax = 0;
+    // OBJLine is cleared lazily, when the first sprite on the line is
+    // about to draw into it; OBJWindow is read by the window-mask
+    // calculation whether or not any sprite drew, so it clears always.
     memset(OBJWindow, 0, sizeof(OBJWindow));
 
     if (!GPU2D.OBJEnable)
@@ -1049,23 +1302,22 @@ void SoftRenderer2D::DrawSprites(u32 line)
 
     u16* oam = (u16*)&GPU.OAM[GPU2D.Num ? 0x400 : 0];
 
-    const s32 spritewidth[16] =
+    if (GPU.OAMDirty & (1u << GPU2D.Num))
     {
-        8, 16, 8, 8,
-        16, 32, 8, 8,
-        32, 32, 16, 8,
-        64, 64, 32, 8
-    };
-    const s32 spriteheight[16] =
-    {
-        8, 8, 16, 8,
-        16, 8, 32, 8,
-        32, 16, 32, 8,
-        64, 32, 64, 8
-    };
+        GPU.OAMDirty &= ~(1u << GPU2D.Num);
+        SpriteLineMaskValid = false;
+    }
+    if (!SpriteLineMaskValid)
+        BuildSpriteLineMask();
 
-    for (int sprnum = 0; sprnum < 128; sprnum++)
+    for (int word = 0; word < 2; word++)
     {
+        u64 m = SpriteLineMask[line][word];
+        while (m)
+    {
+        int sprnum = (word << 6) + __builtin_ctzll(m);
+        m &= m - 1;
+
         u16* attrib = &oam[sprnum*4];
 
         u16 sprtype = (attrib[0] >> 8) & 0x3;
@@ -1075,8 +1327,8 @@ void SoftRenderer2D::DrawSprites(u32 line)
         bool iswin = (((attrib[0] >> 10) & 0x3) == 2);
 
         u32 sizeparam = (attrib[0] >> 14) | ((attrib[1] & 0xC000) >> 12);
-        s32 width = spritewidth[sizeparam];
-        s32 height = spriteheight[sizeparam];
+        s32 width = SpriteWidthTable[sizeparam];
+        s32 height = SpriteHeightTable[sizeparam];
         s32 boundwidth = width;
         s32 boundheight = height;
 
@@ -1107,12 +1359,30 @@ void SoftRenderer2D::DrawSprites(u32 line)
         else
             ypos = (line - ypos) & 0xFF;
 
+        if (!NumSprites)
+            memset(OBJLine, 0, sizeof(OBJLine));
+        if (!iswin)
+        {
+            SpritePrioOnLine |= 1 << ((attrib[2] >> 10) & 0x3);
+
+            u32 spritemode = (attrib[0] >> 10) & 0x3;
+            if (spritemode == 1 || spritemode == 3)
+                SpriteBlendOnLine = true;
+
+            s32 lo = xpos < 0 ? 0 : xpos;
+            s32 hi = xpos + boundwidth;
+            if (hi > 256) hi = 256;
+            if (lo < SpriteXMin) SpriteXMin = lo;
+            if (hi > SpriteXMax) SpriteXMax = hi;
+        }
+
         if (sprtype & 1)
             DoDrawSprite(Rotscale, sprnum, boundwidth, boundheight, width, height, xpos, ypos);
         else
             DoDrawSprite(Normal, sprnum, width, height, xpos, ypos);
 
         NumSprites++;
+    }
     }
 }
 
@@ -1140,6 +1410,20 @@ void SoftRenderer2D::DrawSpritePixel(int color, u32 pixelattr, s32 xpos)
             OBJLine[xpos] &= ~(OBJ_Mosaic | OBJ_BGPrioMask);
             OBJLine[xpos] |= (pixelattr & (OBJ_IsSprite | OBJ_Mosaic | OBJ_BGPrioMask));
         }
+    }
+}
+
+// What DrawSpritePixel does for a run of transparent pixels: no color
+// lands, but the attributes still merge into non-opaque OBJLine pixels
+// (the sprite mosaic pass reads them off transparent pixels too).
+void SoftRenderer2D::MergeTransparentSpritePixels(s32 xpos, u32 len, u32 pixelattr)
+{
+    u32 add = pixelattr & (OBJ_IsSprite | OBJ_Mosaic | OBJ_BGPrioMask);
+    for (u32 k = 0; k < len; k++)
+    {
+        u32 old = OBJLine[xpos + (s32)k];
+        if (!(old & OBJ_IsOpaque))
+            OBJLine[xpos + (s32)k] = (old & ~(u32)(OBJ_Mosaic | OBJ_BGPrioMask)) | add;
     }
 }
 
@@ -1479,7 +1763,8 @@ void SoftRenderer2D::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos,
                 pixelstride = 1;
             }
 
-            for (; xoff < xend;)
+            // leading partial tile, pixel by pixel
+            for (; (xoff & 0x7) && xoff < xend;)
             {
                 color = objvram[pixelsaddr & objvrammask];
 
@@ -1489,6 +1774,42 @@ void SoftRenderer2D::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos,
 
                 xoff++;
                 xpos++;
+                if (!(xoff & 0x7)) pixelsaddr += (56 * pixelstride);
+            }
+
+            // then whole tile rows out of one aligned load each; a
+            // fully transparent row — most of a sprite's bounding box —
+            // takes no pixel work beyond the attribute merge
+            while (xoff < xend)
+            {
+                u32 seglen = xend - xoff;
+                if (seglen > 8) seglen = 8;
+
+                u64 row;
+                if (pixelstride > 0)
+                    row = *(u64*)&objvram[pixelsaddr & objvrammask];
+                else
+                    row = __builtin_bswap64(*(u64*)&objvram[(pixelsaddr - 7) & objvrammask]);
+
+                u64 used = (seglen == 8) ? row : (row & ((1ull << (seglen << 3)) - 1));
+                if (used == 0)
+                {
+                    if constexpr (!window)
+                        MergeTransparentSpritePixels(xpos, seglen, pixelattr);
+                }
+                else
+                {
+                    u64 r = row;
+                    for (u32 k = 0; k < seglen; k++, r >>= 8)
+                    {
+                        u8 c = (u8)r;
+                        DrawSpritePixel<window>(c ? c : -1, pixelattr, xpos + (s32)k);
+                    }
+                }
+
+                xoff += seglen;
+                xpos += (s32)seglen;
+                pixelsaddr += (s32)seglen * pixelstride;
                 if (!(xoff & 0x7)) pixelsaddr += (56 * pixelstride);
             }
         }
@@ -1523,7 +1844,8 @@ void SoftRenderer2D::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos,
                 pixelstride = 1;
             }
 
-            for (; xoff < xend;)
+            // leading partial tile, pixel by pixel
+            for (; (xoff & 0x7) && xoff < xend;)
             {
                 if (attrib[1] & (1<<12))
                 {
@@ -1540,6 +1862,44 @@ void SoftRenderer2D::DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos,
 
                 xoff++;
                 xpos++;
+                if (!(xoff & 0x7)) pixelsaddr += ((attrib[1] & 0x1000) ? -28 : 28);
+            }
+
+            // then whole tile rows of nibbles out of one aligned load
+            // each, as in the 256-color path
+            while (xoff < xend)
+            {
+                u32 seglen = xend - xoff;
+                if (seglen > 8) seglen = 8;
+
+                u32 row;
+                if (pixelstride > 0)
+                    row = *(u32*)&objvram[pixelsaddr & objvrammask];
+                else
+                {
+                    row = __builtin_bswap32(*(u32*)&objvram[(pixelsaddr - 3) & objvrammask]);
+                    row = ((row & 0x0F0F0F0F) << 4) | ((row >> 4) & 0x0F0F0F0F);
+                }
+
+                u32 used = (seglen == 8) ? row : (row & ((1u << (seglen << 2)) - 1));
+                if (used == 0)
+                {
+                    if constexpr (!window)
+                        MergeTransparentSpritePixels(xpos, seglen, pixelattr);
+                }
+                else
+                {
+                    u32 r = row;
+                    for (u32 k = 0; k < seglen; k++, r >>= 4)
+                    {
+                        u8 c = r & 0xF;
+                        DrawSpritePixel<window>(c ? c : -1, pixelattr, xpos + (s32)k);
+                    }
+                }
+
+                xoff += seglen;
+                xpos += (s32)seglen;
+                pixelsaddr += (s32)(seglen >> 1) * pixelstride;
                 if (!(xoff & 0x7)) pixelsaddr += ((attrib[1] & 0x1000) ? -28 : 28);
             }
         }

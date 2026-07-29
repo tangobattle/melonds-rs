@@ -59,6 +59,26 @@ private:
     alignas(8) u8 OBJWindow[256];
 
     u32 NumSprites;
+    // Which BG priorities the sprites drawn into OBJLine can occupy — a
+    // superset, so a clear bit proves an InterleaveSprites pass at that
+    // priority would draw nothing.
+    u32 SpritePrioOnLine;
+    // Whether any sprite on the line can produce a pixel that forces
+    // blending (semi-transparent or bitmap modes) — a superset again:
+    // false proves first-target-side sprite blending can't fire.
+    bool SpriteBlendOnLine;
+    // Union of the drawn sprites' clamped x spans; InterleaveSprites
+    // only walks this window, everything outside it is provably clear.
+    s32 SpriteXMin, SpriteXMax;
+
+    // Per-line bitmask of the sprites DrawSprites would accept — a pure
+    // function of this engine's OAM half, rebuilt when GPU.OAMDirty
+    // reports a write. Turns the 128-entry scan every line into a walk
+    // of the set bits. The emulated CPU never runs during a scan, so
+    // per-line masks and the live OAM reads stay coherent.
+    u64 SpriteLineMask[192][2];
+    bool SpriteLineMaskValid = false;
+    void BuildSpriteLineMask();
 
     u8* CurBGXMosaicTable;
     array2d<u8, 16, 256> MosaicTable = []() constexpr
@@ -88,6 +108,7 @@ private:
 
     void DrawBG_3D();
     template<bool mosaic> void DrawBG_Text(u32 line, u32 bgnum);
+    void DrawBG_Text_Fast(u32 line, u32 bgnum);
     template<bool mosaic> void DrawBG_Affine(u32 line, u32 bgnum);
     template<bool mosaic> void DrawBG_Extended(u32 line, u32 bgnum);
     template<bool mosaic> void DrawBG_Large(u32 line);
@@ -95,6 +116,7 @@ private:
     void ApplySpriteMosaicX();
     void InterleaveSprites(u32 prio);
     template<bool window> void DrawSpritePixel(int color, u32 pixelattr, s32 xpos);
+    void MergeTransparentSpritePixels(s32 xpos, u32 len, u32 pixelattr);
     template<bool window> void DrawSprite_Rotscale(u32 num, u32 boundwidth, u32 boundheight, u32 width, u32 height, s32 xpos, s32 ypos);
     template<bool window> void DrawSprite_Normal(u32 num, u32 width, u32 height, s32 xpos, s32 ypos);
 };
