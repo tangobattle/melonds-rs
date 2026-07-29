@@ -39,6 +39,8 @@
 //!                     before any redirect on the same site runs — for
 //!                     writing the selection a confirm is about to read
 //!   --ram-at F:FILE   dump the whole of main RAM at frame F
+//!   --save-out FILE   write the cart's save memory at exit — the way to
+//!                     tell a real save from a script that merely says so
 //!   --shot-at F,F,..  write console 0's screens as a PNG at these frames
 //!   --dump-dir DIR    where PNGs go (default .)
 
@@ -435,6 +437,10 @@ fn main() {
     }
     for (site, count) in fired.lock().unwrap().iter() {
         println!("redirect {site:08x} fired {count} times");
+    }
+    if let Some(path) = one("save-out") {
+        std::fs::write(&path, nds.save_memory()).unwrap();
+        println!("save memory -> {path}");
     }
     println!("done at frame {frames}, pc={:08x}", nds.pc());
 }
