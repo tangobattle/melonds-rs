@@ -632,6 +632,13 @@ bool NDS::DoSavestate(Savestate* file)
 {
     file->Section("NDSG");
 
+    // The WRAM mapping and the bus timing tables are pure functions of
+    // these registers; remember them so the load path below can tell
+    // whether the loaded state actually changes anything.
+    u8 oldWRAMCnt = WRAMCnt;
+    u16 oldExMemCnt[2] = {ExMemCnt[0], ExMemCnt[1]};
+    u16 oldWifiWaitCnt = WifiWaitCnt;
+
     u32 config = GetSavestateConfig();
     if (file->Saving)
     {
@@ -733,14 +740,22 @@ bool NDS::DoSavestate(Savestate* file)
 
     if (!file->Saving)
     {
-        // 'dept of redundancy dept'
-        // but we do need to update the mappings
-        MapSharedWRAM(WRAMCnt);
+        // The mappings and timing tables only need rebuilding if the
+        // loaded state disagrees with the live one — and a rollback
+        // restore virtually always reinstates the configuration the
+        // console is already in. The full rebuild walks multi-megabyte
+        // per-address tables, which dominated whole-console load time.
+        if (WRAMCnt != oldWRAMCnt)
+            MapSharedWRAM(WRAMCnt);
 
-        InitTimings();
-        SetGBASlotTimings();
+        if (WRAMCnt != oldWRAMCnt || ExMemCnt[0] != oldExMemCnt[0] || ExMemCnt[1] != oldExMemCnt[1]
+            || WifiWaitCnt != oldWifiWaitCnt)
+        {
+            InitTimings();
+            SetGBASlotTimings();
 
-        UpdateWifiTimings();
+            UpdateWifiTimings();
+        }
     }
 
     for (int i = 0; i < 8; i++)
