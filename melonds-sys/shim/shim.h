@@ -85,6 +85,8 @@ int mds_framebuffers(MdsNds* nds, const uint32_t** top, const uint32_t** bottom)
 // Drain up to max_frames stereo sample pairs into out (interleaved L/R,
 // so out must hold 2*max_frames i16). Returns pairs written.
 int mds_audio_read(MdsNds* nds, int16_t* out, int max_frames);
+// Sample frames the SPU is currently holding for the frontend.
+int mds_audio_queued(MdsNds* nds);
 
 // Direct main-RAM aperture (4 MB in DS mode, mask 0x3FFFFF).
 uint8_t* mds_main_ram(MdsNds* nds, uint32_t* mask_out);

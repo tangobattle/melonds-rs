@@ -164,6 +164,11 @@ int mds_audio_read(MdsNds* w, int16_t* out, int max_frames)
     return w->nds->SPU.ReadOutput(out, max_frames);
 }
 
+int mds_audio_queued(MdsNds* w)
+{
+    return w->nds->SPU.GetOutputSize();
+}
+
 uint8_t* mds_main_ram(MdsNds* w, uint32_t* mask_out)
 {
     if (mask_out)

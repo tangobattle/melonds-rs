@@ -461,6 +461,16 @@ impl Nds {
         unsafe { melonds_sys::mds_audio_read(self.ptr, out.as_mut_ptr(), max_frames) as usize }
     }
 
+    /// Sample frames the SPU is holding for the frontend — what
+    /// [`read_audio`](Self::read_audio) would hand over right now.
+    ///
+    /// A frontend that can ask this can leave its audio backlog in the
+    /// SPU and take only what it is about to play, rather than pulling
+    /// the buffer dry and holding it itself.
+    pub fn audio_queued(&mut self) -> usize {
+        unsafe { melonds_sys::mds_audio_queued(self.ptr).max(0) as usize }
+    }
+
     /// The 4 MB main-RAM aperture.
     pub fn main_ram(&mut self) -> &mut [u8] {
         let mut mask = 0u32;
