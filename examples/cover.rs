@@ -262,6 +262,7 @@ fn main() {
             traps.retain(|(addr, _)| *addr != site);
             let fired = fired.clone();
             let rules = rules.clone();
+            let poke = pokes.get(&site).cloned().unwrap_or_default();
             traps.push((
                 site,
                 Box::new(move |nds: &mut melonds::Nds| {
@@ -270,6 +271,9 @@ fn main() {
                             continue;
                         }
                         *fired.lock().unwrap().entry(site).or_default() += 1;
+                        for &(addr, byte) in &poke {
+                            nds.write8(addr, byte);
+                        }
                         if reg < 16 {
                             nds.set_reg(reg, rval);
                         }
