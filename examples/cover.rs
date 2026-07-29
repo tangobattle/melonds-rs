@@ -170,6 +170,9 @@ fn main() {
         })
         .unwrap_or_default();
     let probes: Vec<u32> = opt.get("probe").map(|v| v.iter().map(|a| parse_hex(a)).collect()).unwrap_or_default();
+    // The frame the run is on, for the probes' prints: knowing *when* a
+    // handler ran is as telling as knowing what it was holding.
+    let frame_now = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let probe_from: u32 = one("probe-from").map(|v| v.parse().unwrap()).unwrap_or(0);
     // Read once per probe hit, so it has to be as cheap as the coverage gate.
     let probing = Arc::new(std::sync::atomic::AtomicBool::new(probe_from == 0));
@@ -248,6 +251,7 @@ fn main() {
             traps.retain(|(addr, _)| *addr != site);
             let mut seen = 0usize;
             let probing = probing.clone();
+            let frame_now = frame_now.clone();
             traps.push((
                 site,
                 Box::new(move |nds: &mut melonds::Nds| {
@@ -256,7 +260,12 @@ fn main() {
                     }
                     seen += 1;
                     let regs: Vec<String> = (0..8).map(|i| format!("r{i}={:08x}", nds.reg(i))).collect();
-                    println!("probe {site:08x} #{seen}: {}", regs.join(" "));
+                    println!(
+                        "probe {site:08x} #{seen} [f{}]: {} lr={:08x}",
+                        frame_now.load(std::sync::atomic::Ordering::Relaxed),
+                        regs.join(" "),
+                        nds.reg(14)
+                    );
                 }),
             ));
         }
@@ -376,6 +385,7 @@ fn main() {
     let mut cur = (0u32, None);
 
     for f in 0..frames {
+        frame_now.store(f, std::sync::atomic::Ordering::Relaxed);
         while si < script.len() && script[si].0 <= f {
             cur = (script[si].1, script[si].2);
             si += 1;
