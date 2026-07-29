@@ -4,6 +4,7 @@
 //!
 //! Usage: traps <rom> [save]
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 fn main() {
@@ -16,19 +17,41 @@ fn main() {
     // assumed, so this works on any cart — but sampled from cart code
     // specifically, because the BIOS runs ARM and this test redirects
     // by Thumb instruction width.
+    //
+    // Found with the traps themselves rather than by reading the pc
+    // between frames: between frames the ARM9 is reliably parked in the
+    // BIOS, so sampling there only ever turns up ARM code.
     let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, 0).unwrap();
     nds.boot();
-    let mut site = None;
-    for _ in 0..600 {
-        nds.run_frame();
-        let pc = nds.pc();
-        if (0x0200_0000..0x0240_0000).contains(&pc) && nds.thumb() {
-            site = Some(pc);
-            break;
-        }
+    // The busiest one, so that what follows is exercised properly
+    // rather than proven on a single firing.
+    let seen: Arc<Mutex<HashMap<u32, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+    {
+        let sweep: Vec<(u32, Box<dyn FnMut(&mut melonds::Nds)>)> = (0x0200_0000..0x0202_0000u32)
+            .step_by(2)
+            .map(|addr| {
+                let seen = seen.clone();
+                let f: Box<dyn FnMut(&mut melonds::Nds)> = Box::new(move |nds: &mut melonds::Nds| {
+                    if nds.thumb() {
+                        *seen.lock().unwrap().entry(nds.pc()).or_default() += 1;
+                    }
+                });
+                (addr, f)
+            })
+            .collect();
+        nds.set_traps(sweep);
     }
-    let site = site.expect("never sampled the ARM9 running Thumb in cart code");
-    println!("sampled a live Thumb site in cart code: {site:#010x}");
+    for _ in 0..120 {
+        nds.run_frame();
+    }
+    let site = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .max_by_key(|(_, &n)| n)
+        .map(|(&addr, _)| addr)
+        .expect("never caught the ARM9 running Thumb in cart code");
+    println!("caught a live Thumb site in cart code: {site:#010x}");
     drop(nds);
 
     // Run again to the same point and trap it.
