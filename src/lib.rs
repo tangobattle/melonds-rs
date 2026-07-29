@@ -58,7 +58,7 @@ pub trait Host: Send + Sync {
     fn mp_send_packet(&self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
         data.len() as i32
     }
-    fn mp_recv_packet(&self, inst: InstanceId, data: &mut [u8], timestamp: &mut u64) -> Option<i32> {
+    fn mp_recv_packet(&self, inst: InstanceId, data: &mut [u8], now: u64, timestamp: &mut u64) -> Option<i32> {
         Some(0)
     }
     fn mp_send_cmd(&self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
@@ -70,12 +70,19 @@ pub trait Host: Send + Sync {
     fn mp_send_ack(&self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
         data.len() as i32
     }
-    fn mp_recv_host_packet(&self, inst: InstanceId, data: &mut [u8], timestamp: &mut u64) -> Option<i32> {
+    fn mp_recv_host_packet(&self, inst: InstanceId, data: &mut [u8], now: u64, timestamp: &mut u64) -> Option<i32> {
         None
     }
-    fn mp_recv_replies(&self, inst: InstanceId, data: &mut [u8], timestamp: u64, aidmask: u16) -> u16 {
+    fn mp_recv_replies(&self, inst: InstanceId, data: &mut [u8], now: u64, timestamp: u64, aidmask: u16) -> u16 {
         0
     }
+
+    /// The instance's wifi clock advanced through `now`; every MP frame
+    /// it sends from here on is stamped strictly later. Receives also
+    /// carry their own `now` — together these let a host gate frame
+    /// delivery on emulated time alone, so the two consoles of a pair
+    /// can run concurrently without losing determinism.
+    fn mp_clock(&self, inst: InstanceId, now: u64) {}
 }
 
 static HOST: OnceLock<Box<dyn Host + Send + Sync>> = OnceLock::new();
@@ -147,10 +154,15 @@ unsafe extern "C" fn host_mp_send_packet(
     with_host(|h| h.mp_send_packet(inst_of(userdata), data, timestamp)).unwrap_or(len)
 }
 
-unsafe extern "C" fn host_mp_recv_packet(userdata: *mut std::ffi::c_void, data: *mut u8, timestamp: *mut u64) -> i32 {
+unsafe extern "C" fn host_mp_recv_packet(
+    userdata: *mut std::ffi::c_void,
+    data: *mut u8,
+    now: u64,
+    timestamp: *mut u64,
+) -> i32 {
     let data = std::slice::from_raw_parts_mut(data, RECV_BUF);
     let mut ts = 0u64;
-    let r = with_host(|h| h.mp_recv_packet(inst_of(userdata), data, &mut ts))
+    let r = with_host(|h| h.mp_recv_packet(inst_of(userdata), data, now, &mut ts))
         .flatten()
         .unwrap_or(0);
     if !timestamp.is_null() {
@@ -193,11 +205,12 @@ unsafe extern "C" fn host_mp_send_ack(
 unsafe extern "C" fn host_mp_recv_host_packet(
     userdata: *mut std::ffi::c_void,
     data: *mut u8,
+    now: u64,
     timestamp: *mut u64,
 ) -> i32 {
     let data = std::slice::from_raw_parts_mut(data, RECV_BUF);
     let mut ts = 0u64;
-    let r = with_host(|h| h.mp_recv_host_packet(inst_of(userdata), data, &mut ts))
+    let r = with_host(|h| h.mp_recv_host_packet(inst_of(userdata), data, now, &mut ts))
         .flatten()
         .unwrap_or(-1);
     if !timestamp.is_null() {
@@ -209,11 +222,16 @@ unsafe extern "C" fn host_mp_recv_host_packet(
 unsafe extern "C" fn host_mp_recv_replies(
     userdata: *mut std::ffi::c_void,
     data: *mut u8,
+    now: u64,
     timestamp: u64,
     aidmask: u16,
 ) -> u16 {
     let data = std::slice::from_raw_parts_mut(data, RECV_BUF);
-    with_host(|h| h.mp_recv_replies(inst_of(userdata), data, timestamp, aidmask)).unwrap_or(0)
+    with_host(|h| h.mp_recv_replies(inst_of(userdata), data, now, timestamp, aidmask)).unwrap_or(0)
+}
+
+unsafe extern "C" fn host_mp_clock(userdata: *mut std::ffi::c_void, now: u64) {
+    with_host(|h| h.mp_clock(inst_of(userdata), now));
 }
 
 static VTABLE: melonds_sys::MdsHostVtable = melonds_sys::MdsHostVtable {
@@ -229,6 +247,7 @@ static VTABLE: melonds_sys::MdsHostVtable = melonds_sys::MdsHostVtable {
     mp_send_ack: Some(host_mp_send_ack),
     mp_recv_host_packet: Some(host_mp_recv_host_packet),
     mp_recv_replies: Some(host_mp_recv_replies),
+    mp_clock: Some(host_mp_clock),
 };
 
 /// One emulated DS.
@@ -304,6 +323,15 @@ impl Nds {
 
     pub fn release_screen(&mut self) {
         unsafe { melonds_sys::mds_release_screen(self.ptr) }
+    }
+
+    /// Toggle framebuffer production. Off skips the 2D compositing for
+    /// this console — for an instance nobody displays, or ticks whose
+    /// output nobody will look at. Emulation (including display capture
+    /// into VRAM) is bit-identical either way; only the framebuffer
+    /// goes stale while off.
+    pub fn set_render(&mut self, enabled: bool) {
+        unsafe { melonds_sys::mds_set_render(self.ptr, enabled as i32) }
     }
 
     /// The current front framebuffers (top, bottom), BGRA8888,
@@ -426,3 +454,4 @@ impl Drop for Nds {
         unsafe { melonds_sys::mds_nds_free(self.ptr) }
     }
 }
+

@@ -161,7 +161,7 @@ impl melonds::Host for AirwavesHost {
         data.len() as i32
     }
 
-    fn mp_recv_packet(&self, inst: melonds::InstanceId, data: &mut [u8], ts_out: &mut u64) -> Option<i32> {
+    fn mp_recv_packet(&self, inst: melonds::InstanceId, data: &mut [u8], _now: u64, ts_out: &mut u64) -> Option<i32> {
         // Non-blocking by contract (mirrors LocalMP): whatever regular
         // traffic is already queued, or nothing.
         let me = Airwaves::seat_of(inst);
@@ -176,7 +176,7 @@ impl melonds::Host for AirwavesHost {
         Some(0)
     }
 
-    fn mp_recv_host_packet(&self, inst: melonds::InstanceId, data: &mut [u8], ts_out: &mut u64) -> Option<i32> {
+    fn mp_recv_host_packet(&self, inst: melonds::InstanceId, data: &mut [u8], _now: u64, ts_out: &mut u64) -> Option<i32> {
         let me = Airwaves::seat_of(inst);
         {
             let mut st = self.0.state.lock().unwrap();
@@ -192,7 +192,7 @@ impl melonds::Host for AirwavesHost {
         }
     }
 
-    fn mp_recv_replies(&self, inst: melonds::InstanceId, data: &mut [u8], ts: u64, aidmask: u16) -> u16 {
+    fn mp_recv_replies(&self, inst: melonds::InstanceId, data: &mut [u8], _now: u64, ts: u64, aidmask: u16) -> u16 {
         let me = Airwaves::seat_of(inst);
         let mut st = self.0.wait_peer_past(me, ts + WIFI_REPLY_WINDOW_US);
         let mut mask = 0u16;

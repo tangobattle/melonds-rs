@@ -306,6 +306,13 @@ int MP_SendAck(u8* data, int len, u64 timestamp, void* userdata);
 int MP_RecvHostPacket(u8* data, u64* timestamp, void* userdata);
 u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata);
 
+// Published after each wifi timer batch: every MP frame this instance
+// will ever send from now on carries a timestamp strictly greater than
+// `timestamp`. A deterministic in-process MP layer uses this as the
+// lower bound that lets a peer's receive conclude "nothing more can
+// arrive at or before my poll time".
+void MP_USClock(u64 timestamp, void* userdata);
+
 
 // network comm interface
 // packet type: Ethernet (802.3)

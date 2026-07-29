@@ -33,12 +33,15 @@ typedef struct MdsHostVtable {
     void (*mp_begin)(void* userdata);
     void (*mp_end)(void* userdata);
     int (*mp_send_packet)(void* userdata, const uint8_t* data, int len, uint64_t timestamp);
-    int (*mp_recv_packet)(void* userdata, uint8_t* data, uint64_t* timestamp);
+    int (*mp_recv_packet)(void* userdata, uint8_t* data, uint64_t now, uint64_t* timestamp);
     int (*mp_send_cmd)(void* userdata, const uint8_t* data, int len, uint64_t timestamp);
     int (*mp_send_reply)(void* userdata, const uint8_t* data, int len, uint64_t timestamp, uint16_t aid);
     int (*mp_send_ack)(void* userdata, const uint8_t* data, int len, uint64_t timestamp);
-    int (*mp_recv_host_packet)(void* userdata, uint8_t* data, uint64_t* timestamp);
-    uint16_t (*mp_recv_replies)(void* userdata, uint8_t* data, uint64_t timestamp, uint16_t aidmask);
+    int (*mp_recv_host_packet)(void* userdata, uint8_t* data, uint64_t now, uint64_t* timestamp);
+    uint16_t (*mp_recv_replies)(void* userdata, uint8_t* data, uint64_t now, uint64_t timestamp, uint16_t aidmask);
+    // The instance's wifi clock advanced through `now`: every future MP
+    // send from it is strictly later than `now`.
+    void (*mp_clock)(void* userdata, uint64_t now);
 } MdsHostVtable;
 
 // Install the process-global host hooks. Copies the struct.
@@ -72,6 +75,11 @@ void mds_release_screen(MdsNds* nds);
 // Borrow the current front framebuffers, 32-bit BGRA, 256x192 each.
 // Valid until the next mds_run_frame / mds_state_load. Returns 0 and
 // nulls both on failure (no frame rendered yet).
+// Toggle framebuffer production for this console. Off saves the 2D
+// compositing cost for a console nobody displays; emulation (including
+// display capture into VRAM) is bit-identical either way.
+void mds_set_render(MdsNds* nds, int enabled);
+
 int mds_framebuffers(MdsNds* nds, const uint32_t** top, const uint32_t** bottom);
 
 // Drain up to max_frames stereo sample pairs into out (interleaved L/R,

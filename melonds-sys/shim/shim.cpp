@@ -144,6 +144,11 @@ void mds_release_screen(MdsNds* w)
     w->nds->ReleaseScreen();
 }
 
+void mds_set_render(MdsNds* w, int enabled)
+{
+    w->nds->GPU.RenderEnabled = enabled != 0;
+}
+
 int mds_framebuffers(MdsNds* w, const uint32_t** top, const uint32_t** bottom)
 {
     void* t = nullptr;
@@ -403,7 +408,10 @@ int MP_SendPacket(u8* data, int len, u64 timestamp, void* userdata)
 
 int MP_RecvPacket(u8* data, u64* timestamp, void* userdata)
 {
-    return g_host.mp_recv_packet ? g_host.mp_recv_packet(UD(userdata), data, timestamp) : 0;
+    if (!g_host.mp_recv_packet)
+        return 0;
+    u64 now = static_cast<MdsNds*>(userdata)->nds->Wifi.GetUSTimestamp();
+    return g_host.mp_recv_packet(UD(userdata), data, now, timestamp);
 }
 
 int MP_SendCmd(u8* data, int len, u64 timestamp, void* userdata)
@@ -423,12 +431,24 @@ int MP_SendAck(u8* data, int len, u64 timestamp, void* userdata)
 
 int MP_RecvHostPacket(u8* data, u64* timestamp, void* userdata)
 {
-    return g_host.mp_recv_host_packet ? g_host.mp_recv_host_packet(UD(userdata), data, timestamp) : -1;
+    if (!g_host.mp_recv_host_packet)
+        return -1;
+    u64 now = static_cast<MdsNds*>(userdata)->nds->Wifi.GetUSTimestamp();
+    return g_host.mp_recv_host_packet(UD(userdata), data, now, timestamp);
 }
 
 u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata)
 {
-    return g_host.mp_recv_replies ? g_host.mp_recv_replies(UD(userdata), data, timestamp, aidmask) : 0;
+    if (!g_host.mp_recv_replies)
+        return 0;
+    u64 now = static_cast<MdsNds*>(userdata)->nds->Wifi.GetUSTimestamp();
+    return g_host.mp_recv_replies(UD(userdata), data, now, timestamp, aidmask);
+}
+
+void MP_USClock(u64 timestamp, void* userdata)
+{
+    if (g_host.mp_clock)
+        g_host.mp_clock(UD(userdata), timestamp);
 }
 
 // --- internet (WifiAP) — no connectivity ---------------------------------
