@@ -357,6 +357,19 @@ void Wifi::UpdatePowerOn()
     {
         Log(LogLevel::Debug, "WIFI: ON\n");
 
+        // Start the wifi microsecond clock on the console's video-frame
+        // timeline rather than at zero (or wherever a previous power-on
+        // left it). MP frame delivery in a deterministic in-process
+        // link is gated on these clocks, and consoles enter their comm
+        // screens at arbitrary times: with per-power-on epochs, the
+        // earlier console's frames sit stamped minutes into the later
+        // one's future and discovery starves. Frame count times the
+        // frame's ~16716us puts every instance of a tick-locked pair on
+        // one shared timebase — their clocks agree to within a frame
+        // whenever wifi comes up, wherever the game is in its menus.
+        // Pure emulated state, so determinism is untouched.
+        USTimestamp = (u64)NDS.NumFrames * 16716;
+
         ScheduleTimer(true);
 
         Platform::MP_Begin(NDS.UserData);
