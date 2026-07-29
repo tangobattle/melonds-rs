@@ -55,22 +55,43 @@ public:
 
     void Var8(u8* var)
     {
-        VarArray(var, sizeof(*var));
+        VarSmall(var, sizeof(*var));
     }
 
     void Var16(u16* var)
     {
-        VarArray(var, sizeof(*var));
+        VarSmall(var, sizeof(*var));
     }
 
     void Var32(u32* var)
     {
-        VarArray(var, sizeof(*var));
+        VarSmall(var, sizeof(*var));
     }
 
     void Var64(u64* var)
     {
-        VarArray(var, sizeof(*var));
+        VarSmall(var, sizeof(*var));
+    }
+
+    // The inlined all-fits fast path of VarArray. Sections like the 3D
+    // geometry state serialize hundreds of thousands of small fields;
+    // taking the out-of-line general path for each of them dominates
+    // whole-console savestate time.
+    void VarSmall(void* data, u32 len)
+    {
+        if (Error || finished) return;
+        if (buffer_offset + len > buffer_length)
+        {
+            // Doesn't fit: grow (saving) or fail (loading) — the
+            // general path handles both.
+            VarArray(data, len);
+            return;
+        }
+        if (Saving)
+            memcpy(buffer + buffer_offset, data, len);
+        else
+            memcpy(data, buffer + buffer_offset, len);
+        buffer_offset += len;
     }
 
     void VarBool(bool* var);

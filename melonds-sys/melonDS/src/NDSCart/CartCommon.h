@@ -103,6 +103,12 @@ protected:
     bool DSiMode = false;
     u32 DSiBase = 0;
 
+    // Checksum() runs on every savestate save AND load; CRCing
+    // megabytes of immutable ROM each time dominated whole-console
+    // snapshot cost, so the result is computed once and kept.
+    mutable u32 CachedChecksum = 0;
+    mutable bool ChecksumValid = false;
+
     // lenient addressing: do not redirect ROM accesses below 0x8000 etc
     bool LenientAddressing = false;
 

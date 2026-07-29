@@ -77,6 +77,13 @@ void ARMv5::CP15DoSavestate(Savestate* file)
 {
     file->Section("CP15");
 
+    u32 oldControl = CP15Control;
+    u32 oldDTCM = DTCMSetting, oldITCM = ITCMSetting;
+    u32 oldCodeCache = PU_CodeCacheable, oldDataCache = PU_DataCacheable, oldDataWrite = PU_DataCacheWrite;
+    u32 oldCodeRW = PU_CodeRW, oldDataRW = PU_DataRW;
+    u32 oldRegion[8];
+    memcpy(oldRegion, PU_Region, sizeof(oldRegion));
+
     file->Var32(&CP15Control);
 
     file->Var32(&DTCMSetting);
@@ -96,9 +103,28 @@ void ARMv5::CP15DoSavestate(Savestate* file)
 
     if (!file->Saving)
     {
-        UpdateDTCMSetting();
-        UpdateITCMSetting();
-        UpdatePURegions(true);
+        // Rollback restores overwhelmingly reload the exact protection
+        // and TCM configuration the core is already running; rebuilding
+        // the 1M-entry PU maps and timing tables regardless cost more
+        // than the rest of the console load. The rebuild's only inputs
+        // are these registers (bus-side timing changes propagate through
+        // SetARM9RegionTimings on their own), so an unchanged set means
+        // an unchanged result.
+        bool same = oldControl == CP15Control && oldDTCM == DTCMSetting && oldITCM == ITCMSetting
+            && oldCodeCache == PU_CodeCacheable && oldDataCache == PU_DataCacheable
+            && oldDataWrite == PU_DataCacheWrite && oldCodeRW == PU_CodeRW && oldDataRW == PU_DataRW
+            && !memcmp(oldRegion, PU_Region, sizeof(oldRegion));
+        if (!same)
+        {
+            UpdateDTCMSetting();
+            UpdateITCMSetting();
+            UpdatePURegions(true);
+        }
+#ifdef JIT_ENABLED
+        // The block lookup cache spans the reloaded ITCM contents
+        // either way; UpdateITCMSetting would have dropped it.
+        FastBlockLookupSize = 0;
+#endif
     }
 }
 

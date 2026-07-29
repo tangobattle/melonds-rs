@@ -60,6 +60,9 @@ CartCommon::~CartCommon() = default;
 
 u32 CartCommon::Checksum() const
 {
+    if (ChecksumValid)
+        return CachedChecksum;
+
     const NDSHeader& header = GetHeader();
     u32 crc = CRC32(ROM.get(), 0x40);
 
@@ -72,6 +75,8 @@ u32 CartCommon::Checksum() const
         crc = CRC32(&ROM[header.DSiARM7iROMOffset], header.DSiARM7iSize, crc);
     }
 
+    CachedChecksum = crc;
+    ChecksumValid = true;
     return crc;
 }
 
