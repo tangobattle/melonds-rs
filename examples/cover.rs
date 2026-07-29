@@ -15,6 +15,10 @@
 //!   --cover A-B:FILE  record every address executed in frames A..=B
 //!   --range LO-HI     address range to record (default the cart code)
 //!   --watch ADDR:LEN  print hex when a main-RAM range changes
+//!   --redirect S:T    whenever the ARM9 reaches S, jump it to T instead
+//!                     (repeatable) — for trying out a priming anchor
+//!   --shot-at F,F,..  write console 0's screens as a PNG at these frames
+//!   --dump-dir DIR    where PNGs go (default .)
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -89,7 +93,24 @@ fn main() {
     // instruction, so the gate has to be nearly free when it is shut.
     let recording = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let hits: Arc<Mutex<std::collections::HashSet<u32>>> = Arc::new(Mutex::new(Default::default()));
-    if !windows.is_empty() {
+
+    // Redirects are the point of the exercise: an anchor found by
+    // covering is tried by pointing it at the branch a press would have
+    // taken, and the game should carry on as if the press happened.
+    let redirects: Vec<(u32, u32)> = opt
+        .get("redirect")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let (s, t) = w.split_once(':').unwrap();
+                    (parse_hex(s), parse_hex(t))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let fired: Arc<Mutex<HashMap<u32, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+
+    if !windows.is_empty() || !redirects.is_empty() {
         // Every halfword address in the range, because a trap only
         // reports for an address that was registered. The range is the
         // cart's code by default; widening it costs memory per address,
@@ -100,9 +121,9 @@ fn main() {
                 (parse_hex(a), parse_hex(b))
             })
             .unwrap_or((0x0200_0000, 0x0214_0000));
-        let traps = (lo..hi)
-            .step_by(2)
-            .map(|addr| {
+        let mut traps: Vec<(u32, Box<dyn FnMut(&mut melonds::Nds)>)> = Vec::new();
+        if !windows.is_empty() {
+            traps.extend((lo..hi).step_by(2).map(|addr| {
                 let recording = recording.clone();
                 let hits = hits.clone();
                 let f: Box<dyn FnMut(&mut melonds::Nds)> = Box::new(move |nds: &mut melonds::Nds| {
@@ -111,8 +132,21 @@ fn main() {
                     }
                 });
                 (addr, f)
-            })
-            .collect();
+            }));
+        }
+        // A redirect replaces any coverage handler on the same address:
+        // one handler per address, and jumping is the more specific job.
+        for &(site, target) in &redirects {
+            traps.retain(|(addr, _)| *addr != site);
+            let fired = fired.clone();
+            traps.push((
+                site,
+                Box::new(move |nds: &mut melonds::Nds| {
+                    *fired.lock().unwrap().entry(site).or_default() += 1;
+                    nds.jump_here(target);
+                }),
+            ));
+        }
         nds.set_traps(traps);
     }
 
@@ -145,6 +179,10 @@ fn main() {
     let mut watch_prev: Vec<Vec<u8>> = watches.iter().map(|&(_, l)| vec![0; l]).collect();
 
     let frames: u32 = one("frames").map(|v| v.parse().unwrap()).unwrap_or(600);
+    let shot_at: Vec<u32> = one("shot-at")
+        .map(|v| v.split(',').map(|x| x.parse().unwrap()).collect())
+        .unwrap_or_default();
+    let dump_dir = one("dump-dir").unwrap_or_else(|| ".".into());
     let mut si = 0usize;
     let mut cur = (0u32, None);
 
@@ -176,6 +214,19 @@ fn main() {
             }
         }
 
+        if shot_at.contains(&f) {
+            if let Some((top, bottom)) = nds.framebuffers() {
+                let mut img = image::RgbImage::new(256, 384);
+                for (half, screen) in [top, bottom].into_iter().enumerate() {
+                    for (i, &pixel) in screen.iter().enumerate() {
+                        let [b, g, r, _] = pixel.to_le_bytes();
+                        img.put_pixel((i % 256) as u32, (half * 192 + i / 256) as u32, image::Rgb([r, g, b]));
+                    }
+                }
+                img.save(format!("{dump_dir}/f{f:06}.png")).unwrap();
+            }
+        }
+
         // A window closes on its last frame; write it out and reset.
         for (a, b, path) in &windows {
             if f == *b {
@@ -187,6 +238,9 @@ fn main() {
                 hits.lock().unwrap().clear();
             }
         }
+    }
+    for (site, count) in fired.lock().unwrap().iter() {
+        println!("redirect {site:08x} fired {count} times");
     }
     println!("done at frame {frames}, pc={:08x}", nds.pc());
 }
