@@ -449,6 +449,12 @@ void NDS::Reset()
 
     RunningGame = false;
     LastSysClockCycles = 0;
+    // Never assigned anywhere else: a fresh NDS read whatever the heap
+    // held here, and Wifi power-on seeds USTimestamp from it — so an
+    // instance allocated over a freed one inherited the old session's
+    // frame count as its wireless clock, and a linked pair booted with
+    // clocks tens of seconds apart.
+    NumFrames = 0;
 
     // BIOS files are now loaded by the frontend
 
