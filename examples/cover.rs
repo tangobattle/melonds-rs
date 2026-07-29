@@ -43,6 +43,13 @@
 //!                     tell a real save from a script that merely says so
 //!   --shot-at F,F,..  write console 0's screens as a PNG at these frames
 //!   --dump-dir DIR    where PNGs go (default .)
+//!
+//! The same instruments exist for the ARM7, where the platform code the
+//! game leans on runs — sound, wireless, the cartridge backup server:
+//!   --cover7 A-B:FILE  --range7 LO-HI (default the ARM7's WRAM)
+//!   --redirect7 S:T    --probe7 ADDR   --setreg7 S:R:VAL
+//!   --watch7 ADDR:LEN  reads through the ARM7's bus, so it sees WRAM
+//!   --dump7 F:LO-HI:FILE  dump an ARM7 bus range at frame F
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -337,6 +344,112 @@ fn main() {
         nds.set_traps(traps);
     }
 
+    // The ARM7 instruments: the same shapes, on the other processor.
+    let windows7: Vec<(u32, u32, String)> = opt
+        .get("cover7")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let (range, path) = w.split_once(':').unwrap();
+                    let (a, b) = range.split_once('-').unwrap();
+                    (a.parse().unwrap(), b.parse().unwrap(), path.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let recording7 = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hits7: Arc<Mutex<std::collections::HashSet<u32>>> = Arc::new(Mutex::new(Default::default()));
+    let redirects7: Vec<(u32, u32)> = opt
+        .get("redirect7")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let (s, t) = w.split_once(':').unwrap();
+                    (parse_hex(s), parse_hex(t))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let probes7: Vec<u32> = opt
+        .get("probe7")
+        .map(|v| v.iter().map(|a| parse_hex(a)).collect())
+        .unwrap_or_default();
+    let setregs7: HashMap<u32, (u32, u32)> = opt
+        .get("setreg7")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let mut it = w.split(':');
+                    let site = parse_hex(it.next().unwrap());
+                    let reg: u32 = it.next().unwrap().parse().unwrap();
+                    let val = parse_hex(it.next().unwrap());
+                    (site, (reg, val))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if !windows7.is_empty() || !redirects7.is_empty() || !probes7.is_empty() {
+        // The ARM7's own WRAM by default — where the platform code that
+        // answers the ARM9's requests actually lives.
+        let (lo, hi) = one("range7")
+            .map(|r| {
+                let (a, b) = r.split_once('-').unwrap();
+                (parse_hex(a), parse_hex(b))
+            })
+            .unwrap_or((0x0378_0000, 0x0381_0000));
+        let mut traps: Vec<(u32, Box<dyn FnMut(&mut melonds::Nds)>)> = Vec::new();
+        if !windows7.is_empty() {
+            traps.extend((lo..hi).step_by(2).map(|addr| {
+                let recording7 = recording7.clone();
+                let hits7 = hits7.clone();
+                let f: Box<dyn FnMut(&mut melonds::Nds)> = Box::new(move |nds: &mut melonds::Nds| {
+                    if recording7.load(std::sync::atomic::Ordering::Relaxed) {
+                        hits7.lock().unwrap().insert(nds.arm7_pc());
+                    }
+                });
+                (addr, f)
+            }));
+        }
+        for &(site, target) in &redirects7 {
+            traps.retain(|(addr, _)| *addr != site);
+            let fired = fired.clone();
+            let setreg = setregs7.get(&site).copied();
+            traps.push((
+                site,
+                Box::new(move |nds: &mut melonds::Nds| {
+                    *fired.lock().unwrap().entry(site).or_default() += 1;
+                    if let Some((reg, val)) = setreg {
+                        nds.arm7_set_reg(reg, val);
+                    }
+                    nds.arm7_jump_here(target);
+                }),
+            ));
+        }
+        for &site in &probes7 {
+            traps.retain(|(addr, _)| *addr != site);
+            let mut seen = 0usize;
+            let probing = probing.clone();
+            let frame_now = frame_now.clone();
+            traps.push((
+                site,
+                Box::new(move |nds: &mut melonds::Nds| {
+                    if seen >= 4 || !probing.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    seen += 1;
+                    let regs: Vec<String> = (0..8).map(|i| format!("r{i}={:08x}", nds.arm7_reg(i))).collect();
+                    println!(
+                        "probe7 {site:08x} #{seen} [f{}]: {} lr={:08x}",
+                        frame_now.load(std::sync::atomic::Ordering::Relaxed),
+                        regs.join(" "),
+                        nds.arm7_reg(14)
+                    );
+                }),
+            ));
+        }
+        nds.set_traps7(traps);
+    }
+
     let mut script: Vec<(u32, u32, Option<(u16, u16)>)> = Vec::new();
     if let Some(path) = one("script") {
         for line in std::fs::read_to_string(path).unwrap().lines() {
@@ -364,6 +477,33 @@ fn main() {
         })
         .unwrap_or_default();
     let mut watch_prev: Vec<Vec<u8>> = watches.iter().map(|&(_, l)| vec![0; l]).collect();
+
+    let watches7: Vec<(u32, usize)> = opt
+        .get("watch7")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let (a, l) = w.split_once(':').unwrap();
+                    (parse_hex(a), parse_hex(l) as usize)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut watch7_prev: Vec<Vec<u8>> = watches7.iter().map(|&(_, l)| vec![0; l]).collect();
+    // (frame, lo, hi, path)
+    let dump7: Vec<(u32, u32, u32, String)> = opt
+        .get("dump7")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let mut it = w.split(':');
+                    let f: u32 = it.next().unwrap().parse().unwrap();
+                    let (a, b) = it.next().unwrap().split_once('-').unwrap();
+                    (f, parse_hex(a), parse_hex(b), it.next().unwrap().to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
 
     let frames: u32 = one("frames").map(|v| v.parse().unwrap()).unwrap_or(600);
     let shot_at: Vec<u32> = one("shot-at")
@@ -399,8 +539,11 @@ fn main() {
         probing.store(f >= probe_from, std::sync::atomic::Ordering::Relaxed);
         let active = windows.iter().any(|&(a, b, _)| f >= a && f <= b);
         recording.store(active, std::sync::atomic::Ordering::Relaxed);
+        let active7 = windows7.iter().any(|&(a, b, _)| f >= a && f <= b);
+        recording7.store(active7, std::sync::atomic::Ordering::Relaxed);
         nds.run_frame();
         recording.store(false, std::sync::atomic::Ordering::Relaxed);
+        recording7.store(false, std::sync::atomic::Ordering::Relaxed);
 
         for (wi, &(addr, len)) in watches.iter().enumerate() {
             let ram = nds.main_ram();
@@ -433,6 +576,22 @@ fn main() {
             }
         }
 
+        for (wi, &(addr, len)) in watches7.iter().enumerate() {
+            let buf: Vec<u8> = (0..len).map(|i| nds.arm7_read8(addr + i as u32)).collect();
+            if buf != watch7_prev[wi] {
+                let hex: Vec<String> = buf.iter().map(|b| format!("{b:02x}")).collect();
+                println!("[{f:5}] 7:{addr:08x}: {}", hex.join(" "));
+                watch7_prev[wi] = buf;
+            }
+        }
+        for (df, lo, hi, path) in &dump7 {
+            if *df == f {
+                let buf: Vec<u8> = (*lo..*hi).map(|a| nds.arm7_read8(a)).collect();
+                std::fs::write(path, buf).unwrap();
+                println!("[{f:5}] arm7 {lo:08x}-{hi:08x} -> {path}");
+            }
+        }
+
         // A window closes on its last frame; write it out and reset.
         for (a, b, path) in &windows {
             if f == *b {
@@ -442,6 +601,16 @@ fn main() {
                 std::fs::write(path, text).unwrap();
                 println!("[{f:5}] cover {a}-{b}: {} addresses -> {path}", sorted.len());
                 hits.lock().unwrap().clear();
+            }
+        }
+        for (a, b, path) in &windows7 {
+            if f == *b {
+                let mut sorted: Vec<u32> = hits7.lock().unwrap().iter().copied().collect();
+                sorted.sort_unstable();
+                let text: String = sorted.iter().map(|a| format!("{a:08x}\n")).collect();
+                std::fs::write(path, text).unwrap();
+                println!("[{f:5}] cover7 {a}-{b}: {} addresses -> {path}", sorted.len());
+                hits7.lock().unwrap().clear();
             }
         }
     }

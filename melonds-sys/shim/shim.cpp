@@ -57,7 +57,26 @@ struct MdsNds
 {
     std::unique_ptr<NDS> nds;
     void* userdata;
+    // How many traps each CPU has installed. The JIT is one switch for
+    // the whole console, so it stands down while either CPU is trapped.
+    uint32_t trap_count9 = 0;
+    uint32_t trap_count7 = 0;
 };
+
+// The JIT has to stand down while any traps are installed — a compiled
+// block runs straight past them. Turning it off resets the block cache,
+// and turning it back on starts a fresh one, so no block outlives the
+// switch and the two modes never disagree about what is compiled.
+//
+// This is why traps are a priming tool: priming runs interpreted and is
+// short, and clearing the traps hands the match back to the JIT.
+static void mds_apply_jit_gate(MdsNds* w)
+{
+#ifdef JIT_ENABLED
+    bool trapped = w->trap_count9 || w->trap_count7;
+    w->nds->SetJITArgs(trapped ? std::nullopt : std::optional<JITArgs>(JITArgs()));
+#endif
+}
 
 MdsNds* mds_nds_new(const uint8_t* rom, uint32_t rom_len, const uint8_t* save, uint32_t save_len, int instance_id,
                     void* userdata)
@@ -217,18 +236,54 @@ void mds_arm9_jump(MdsNds* w, uint32_t addr)
 void mds_set_traps(MdsNds* w, const uint32_t* addrs, uint32_t count, MdsTrapFn fn, void* userdata)
 {
     w->nds->ARM9.SetTraps(addrs, count, reinterpret_cast<melonDS::ARM::TrapFn>(fn), userdata);
+    w->trap_count9 = count;
+    mds_apply_jit_gate(w);
+}
 
-#ifdef JIT_ENABLED
-    // Traps live in the interpreter's instruction loop, so the JIT has
-    // to stand down while any are installed — a compiled block runs
-    // straight past them. Turning it off resets the block cache, and
-    // turning it back on starts a fresh one, so no block outlives the
-    // switch and the two modes never disagree about what is compiled.
-    //
-    // This is why traps are a priming tool: priming runs interpreted and
-    // is short, and clearing the traps hands the match back to the JIT.
-    w->nds->SetJITArgs(count ? std::nullopt : std::optional<JITArgs>(JITArgs()));
-#endif
+// The ARM7 mirror of the mds_arm9_* surface. The other processor is
+// where the platform code the game leans on actually runs — the sound
+// engine, the wireless stack, the cartridge backup server — so a walk
+// that has to answer *those* waits needs its feet on this side too.
+
+uint32_t mds_arm7_read32(MdsNds* w, uint32_t addr) { return w->nds->ARM7Read32(addr); }
+uint16_t mds_arm7_read16(MdsNds* w, uint32_t addr) { return w->nds->ARM7Read16(addr); }
+uint8_t mds_arm7_read8(MdsNds* w, uint32_t addr) { return w->nds->ARM7Read8(addr); }
+void mds_arm7_write32(MdsNds* w, uint32_t addr, uint32_t val) { w->nds->ARM7Write32(addr, val); }
+void mds_arm7_write16(MdsNds* w, uint32_t addr, uint16_t val) { w->nds->ARM7Write16(addr, val); }
+void mds_arm7_write8(MdsNds* w, uint32_t addr, uint8_t val) { w->nds->ARM7Write8(addr, val); }
+
+uint32_t mds_arm7_pc(MdsNds* w)
+{
+    auto& cpu = w->nds->ARM7;
+    return cpu.R[15] - ((cpu.CPSR & 0x20) ? 2 : 4);
+}
+
+uint32_t mds_arm7_reg(MdsNds* w, uint32_t i)
+{
+    return i < 16 ? w->nds->ARM7.R[i] : 0;
+}
+
+void mds_arm7_set_reg(MdsNds* w, uint32_t i, uint32_t val)
+{
+    if (i < 16)
+        w->nds->ARM7.R[i] = val;
+}
+
+int mds_arm7_thumb(MdsNds* w)
+{
+    return (w->nds->ARM7.CPSR & 0x20) ? 1 : 0;
+}
+
+void mds_arm7_jump(MdsNds* w, uint32_t addr)
+{
+    w->nds->ARM7.JumpTo(addr);
+}
+
+void mds_set_traps7(MdsNds* w, const uint32_t* addrs, uint32_t count, MdsTrapFn fn, void* userdata)
+{
+    w->nds->ARM7.SetTraps(addrs, count, reinterpret_cast<melonDS::ARM::TrapFn>(fn), userdata);
+    w->trap_count7 = count;
+    mds_apply_jit_gate(w);
 }
 
 uint64_t mds_sys_timestamp(MdsNds* w)

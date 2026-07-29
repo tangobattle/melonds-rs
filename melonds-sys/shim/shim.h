@@ -132,6 +132,24 @@ void mds_arm9_jump(MdsNds* nds, uint32_t addr);
 typedef void (*MdsTrapFn)(void* userdata, uint32_t addr);
 void mds_set_traps(MdsNds* nds, const uint32_t* addrs, uint32_t count, MdsTrapFn fn, void* userdata);
 
+// The ARM7 mirror of the mds_arm9_* surface, same contracts throughout.
+// The platform code the game leans on — sound, wireless, the cartridge
+// backup server — runs on this processor, so a walk that must answer
+// those waits needs traps here too. Trap counts are per-CPU but the JIT
+// gate is shared: the JIT stands down while either CPU has traps.
+uint32_t mds_arm7_read32(MdsNds* nds, uint32_t addr);
+uint16_t mds_arm7_read16(MdsNds* nds, uint32_t addr);
+uint8_t mds_arm7_read8(MdsNds* nds, uint32_t addr);
+void mds_arm7_write32(MdsNds* nds, uint32_t addr, uint32_t val);
+void mds_arm7_write16(MdsNds* nds, uint32_t addr, uint16_t val);
+void mds_arm7_write8(MdsNds* nds, uint32_t addr, uint8_t val);
+uint32_t mds_arm7_pc(MdsNds* nds);
+uint32_t mds_arm7_reg(MdsNds* nds, uint32_t i);
+void mds_arm7_set_reg(MdsNds* nds, uint32_t i, uint32_t val);
+int mds_arm7_thumb(MdsNds* nds);
+void mds_arm7_jump(MdsNds* nds, uint32_t addr);
+void mds_set_traps7(MdsNds* nds, const uint32_t* addrs, uint32_t count, MdsTrapFn fn, void* userdata);
+
 // Emulated system-clock cycle count (33.513982 MHz domain) — the
 // lockstep coordinator's notion of instance progress.
 uint64_t mds_sys_timestamp(MdsNds* nds);

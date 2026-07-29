@@ -821,6 +821,11 @@ void ARMv4::Execute()
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
                     GdbCheckC();
 
+                // Same contract as the ARM9's: a trap here may JumpTo()
+                // elsewhere, and the prefetch below then picks up the
+                // target rather than this instruction.
+                CheckTrap(R[15] - 2);
+
                 // prefetch
                 R[15] += 2;
                 CurInstr = NextInstr[0];
@@ -835,6 +840,8 @@ void ARMv4::Execute()
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
                     GdbCheckC();
+
+                CheckTrap(R[15] - 4);
 
                 // prefetch
                 R[15] += 4;

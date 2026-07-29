@@ -260,6 +260,8 @@ pub struct Nds {
     /// Kept alive for as long as the core holds a pointer to it; see
     /// [`Nds::set_traps`].
     traps: Option<Box<TrapTable>>,
+    /// The ARM7's table, same lifetime contract; see [`Nds::set_traps7`].
+    traps7: Option<Box<TrapTable>>,
 }
 
 /// What a trap trampoline needs: the handlers, by address, and a way
@@ -284,6 +286,7 @@ unsafe extern "C" fn trap_trampoline(userdata: *mut std::ffi::c_void, addr: u32)
         ptr: table.ptr,
         state_buf_hint: 0,
         traps: None,
+        traps7: None,
     };
     handler(&mut nds);
     // The borrowed wrapper must not free the instance or disarm the
@@ -332,6 +335,7 @@ impl Nds {
             ptr,
             state_buf_hint: 0,
             traps: None,
+            traps7: None,
         })
     }
 
@@ -368,6 +372,32 @@ impl Nds {
         self.traps = (!addrs.is_empty()).then_some(table);
     }
 
+    /// [`set_traps`](Self::set_traps), but for the ARM7 — where the
+    /// platform code the game leans on actually runs: the sound engine,
+    /// the wireless stack, the cartridge backup server. A walk that has
+    /// to answer one of those waits needs its feet on this side too.
+    ///
+    /// Same contracts throughout: handlers may read and write memory and
+    /// may [`arm7_jump`](Self::arm7_jump); either CPU having traps holds
+    /// the whole console on the interpreter.
+    pub fn set_traps7(&mut self, traps: Vec<(u32, Box<dyn FnMut(&mut Nds)>)>) {
+        let addrs: Vec<u32> = traps.iter().map(|(addr, _)| *addr).collect();
+        let table = Box::new(TrapTable {
+            handlers: traps.into_iter().collect(),
+            ptr: self.ptr,
+        });
+        unsafe {
+            melonds_sys::mds_set_traps7(
+                self.ptr,
+                addrs.as_ptr(),
+                addrs.len() as u32,
+                if addrs.is_empty() { None } else { Some(trap_trampoline) },
+                &*table as *const TrapTable as *mut std::ffi::c_void,
+            )
+        };
+        self.traps7 = (!addrs.is_empty()).then_some(table);
+    }
+
     /// One ARM9 general register, 0-15. Inside a trap this is how a
     /// handler reaches the object the trapped function was working on —
     /// reading `r4` to find a menu's state block, say, so the selection
@@ -402,6 +432,64 @@ impl Nds {
     pub fn jump_here(&mut self, addr: u32) {
         let thumb = self.thumb();
         self.jump(addr | u32::from(thumb));
+    }
+
+    /// One ARM7 general register, 0-15; the mirror of [`reg`](Self::reg).
+    pub fn arm7_reg(&mut self, i: u32) -> u32 {
+        unsafe { melonds_sys::mds_arm7_reg(self.ptr, i) }
+    }
+
+    pub fn arm7_set_reg(&mut self, i: u32, val: u32) {
+        unsafe { melonds_sys::mds_arm7_set_reg(self.ptr, i, val) }
+    }
+
+    /// Whether the ARM7 is executing Thumb.
+    pub fn arm7_thumb(&mut self) -> bool {
+        unsafe { melonds_sys::mds_arm7_thumb(self.ptr) != 0 }
+    }
+
+    /// Redirect the ARM7; `addr` is an interworking address, as
+    /// [`jump`](Self::jump) is for the ARM9.
+    pub fn arm7_jump(&mut self, addr: u32) {
+        unsafe { melonds_sys::mds_arm7_jump(self.ptr, addr) }
+    }
+
+    /// Redirect the ARM7 within its current instruction set.
+    pub fn arm7_jump_here(&mut self, addr: u32) {
+        let thumb = self.arm7_thumb();
+        self.arm7_jump(addr | u32::from(thumb));
+    }
+
+    /// The address of the instruction the ARM7 is about to execute.
+    pub fn arm7_pc(&mut self) -> u32 {
+        unsafe { melonds_sys::mds_arm7_pc(self.ptr) }
+    }
+
+    /// Reads and writes through the ARM7's bus — the only way to see
+    /// ARM7-private WRAM, which is where the platform code keeps its
+    /// state.
+    pub fn arm7_read32(&mut self, addr: u32) -> u32 {
+        unsafe { melonds_sys::mds_arm7_read32(self.ptr, addr) }
+    }
+
+    pub fn arm7_read16(&mut self, addr: u32) -> u16 {
+        unsafe { melonds_sys::mds_arm7_read16(self.ptr, addr) }
+    }
+
+    pub fn arm7_read8(&mut self, addr: u32) -> u8 {
+        unsafe { melonds_sys::mds_arm7_read8(self.ptr, addr) }
+    }
+
+    pub fn arm7_write32(&mut self, addr: u32, val: u32) {
+        unsafe { melonds_sys::mds_arm7_write32(self.ptr, addr, val) }
+    }
+
+    pub fn arm7_write16(&mut self, addr: u32, val: u16) {
+        unsafe { melonds_sys::mds_arm7_write16(self.ptr, addr, val) }
+    }
+
+    pub fn arm7_write8(&mut self, addr: u32, val: u8) {
+        unsafe { melonds_sys::mds_arm7_write8(self.ptr, addr, val) }
     }
 
     /// Pin the cart RTC to a fixed date/time. Call before [`boot`](Self::boot).
