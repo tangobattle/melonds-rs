@@ -94,6 +94,26 @@ void SoftRenderer::SetRenderSettings(RendererSettings& settings)
 
 void SoftRenderer::DrawScanline(u32 line)
 {
+    if (!GPU.RenderEnabled)
+    {
+        // Nobody displays this console. Capture still writes VRAM —
+        // emulated state — so the lines it reads are composited at
+        // full fidelity; everything else is skipped.
+        u32 vline = GPU.VCount;
+        if (vline < 192 && GPU.CaptureEnable)
+        {
+            Output3D = Rend3D->GetLine(vline);
+            // Sprites pre-render one line ahead; line 0's were due at
+            // VCount==262, when this frame's capture wasn't latched
+            // yet. Redrawing them here is idempotent.
+            if (vline == 0)
+                Rend2D_A->DrawSprites(0);
+            Rend2D_A->DrawScanline(vline);
+            DoCapture(vline);
+        }
+        return;
+    }
+
     u32 *dstA, *dstB;
     u32 dstoffset = 256 * line;
     if (GPU.ScreenSwap)
@@ -159,6 +179,17 @@ void SoftRenderer::DrawScanline(u32 line)
 
 void SoftRenderer::DrawSprites(u32 line)
 {
+    if (!GPU.RenderEnabled)
+    {
+        // Engine A's sprites feed the capture unit; engine B's are
+        // never captured. The armed check covers the line-0 pre-render
+        // at VCount==262, before CaptureEnable latches for the coming
+        // frame.
+        if (GPU.CaptureEnable || (GPU.CaptureCnt & (1u<<31)))
+            Rend2D_A->DrawSprites(line);
+        return;
+    }
+
     Rend2D_A->DrawSprites(line);
     Rend2D_B->DrawSprites(line);
 }

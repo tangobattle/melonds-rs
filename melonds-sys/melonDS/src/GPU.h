@@ -618,6 +618,14 @@ public:
     bool ScreensEnabled = false;
     bool ScreenSwap = false;
 
+    // Host-side toggle: when false, the 2D compositors skip producing
+    // framebuffer output for this console (nobody is looking at it).
+    // Display capture still runs at full fidelity — it writes VRAM,
+    // which is emulated state — so emulation is bit-identical either
+    // way. Deliberately not savestated: it is about the *viewer*, not
+    // the console.
+    bool RenderEnabled = true;
+
     u16 VCount = 0;
     u16 TotalScanlines = 0;
     u16 DispStat[2] {};
