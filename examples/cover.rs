@@ -22,6 +22,15 @@
 //!                     game carry on normally
 //!   --probe ADDR      print r0-r7 the first few times ADDR is reached —
 //!                     for finding the object a handler is working on
+//!   --probe-from F    don't start probing until frame F, so a probe can
+//!                     sample a screen that only exists later on
+//!   --setreg S:R:VAL  set register R when the ARM9 reaches S, before any
+//!                     redirect on the same site — for handing a branch
+//!                     the value it was about to compute
+//!   --poke S:ADDR:BB  write byte BB at ADDR whenever the ARM9 reaches S,
+//!                     before any redirect on the same site runs — for
+//!                     writing the selection a confirm is about to read
+//!   --ram-at F:FILE   dump the whole of main RAM at frame F
 //!   --shot-at F,F,..  write console 0's screens as a PNG at these frames
 //!   --dump-dir DIR    where PNGs go (default .)
 
@@ -125,6 +134,39 @@ fn main() {
         })
         .unwrap_or_default();
     let probes: Vec<u32> = opt.get("probe").map(|v| v.iter().map(|a| parse_hex(a)).collect()).unwrap_or_default();
+    let probe_from: u32 = one("probe-from").map(|v| v.parse().unwrap()).unwrap_or(0);
+    // Read once per probe hit, so it has to be as cheap as the coverage gate.
+    let probing = Arc::new(std::sync::atomic::AtomicBool::new(probe_from == 0));
+    // site -> (addr, byte), applied on the way into a redirect.
+    let pokes: HashMap<u32, (u32, u8)> = opt
+        .get("poke")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let mut it = w.split(':');
+                    let site = parse_hex(it.next().unwrap());
+                    let addr = parse_hex(it.next().unwrap());
+                    let byte = u8::from_str_radix(it.next().unwrap(), 16).unwrap();
+                    (site, (addr, byte))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // site -> (reg, value)
+    let setregs: HashMap<u32, (u32, u32)> = opt
+        .get("setreg")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let mut it = w.split(':');
+                    let site = parse_hex(it.next().unwrap());
+                    let reg: u32 = it.next().unwrap().parse().unwrap();
+                    let val = parse_hex(it.next().unwrap());
+                    (site, (reg, val))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let fired: Arc<Mutex<HashMap<u32, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
     if !windows.is_empty() || !redirects.is_empty() || !once.is_empty() || !probes.is_empty() {
@@ -156,10 +198,18 @@ fn main() {
         for &(site, target) in &redirects {
             traps.retain(|(addr, _)| *addr != site);
             let fired = fired.clone();
+            let poke = pokes.get(&site).copied();
+            let setreg = setregs.get(&site).copied();
             traps.push((
                 site,
                 Box::new(move |nds: &mut melonds::Nds| {
                     *fired.lock().unwrap().entry(site).or_default() += 1;
+                    if let Some((addr, byte)) = poke {
+                        nds.write8(addr, byte);
+                    }
+                    if let Some((reg, val)) = setreg {
+                        nds.set_reg(reg, val);
+                    }
                     nds.jump_here(target);
                 }),
             ));
@@ -167,10 +217,11 @@ fn main() {
         for &site in &probes {
             traps.retain(|(addr, _)| *addr != site);
             let mut seen = 0usize;
+            let probing = probing.clone();
             traps.push((
                 site,
                 Box::new(move |nds: &mut melonds::Nds| {
-                    if seen >= 4 {
+                    if seen >= 4 || !probing.load(std::sync::atomic::Ordering::Relaxed) {
                         return;
                     }
                     seen += 1;
@@ -182,6 +233,8 @@ fn main() {
         for &(site, target) in &once {
             traps.retain(|(addr, _)| *addr != site);
             let fired = fired.clone();
+            let poke = pokes.get(&site).copied();
+            let setreg = setregs.get(&site).copied();
             let mut spent = false;
             traps.push((
                 site,
@@ -191,6 +244,12 @@ fn main() {
                     }
                     spent = true;
                     *fired.lock().unwrap().entry(site).or_default() += 1;
+                    if let Some((addr, byte)) = poke {
+                        nds.write8(addr, byte);
+                    }
+                    if let Some((reg, val)) = setreg {
+                        nds.set_reg(reg, val);
+                    }
                     nds.jump_here(target);
                 }),
             ));
@@ -231,6 +290,17 @@ fn main() {
         .map(|v| v.split(',').map(|x| x.parse().unwrap()).collect())
         .unwrap_or_default();
     let dump_dir = one("dump-dir").unwrap_or_else(|| ".".into());
+    let ram_at: Vec<(u32, String)> = opt
+        .get("ram-at")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let (f, p) = w.split_once(':').unwrap();
+                    (f.parse().unwrap(), p.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let mut si = 0usize;
     let mut cur = (0u32, None);
 
@@ -245,6 +315,7 @@ fn main() {
         }
         nds.set_keys(cur.0);
 
+        probing.store(f >= probe_from, std::sync::atomic::Ordering::Relaxed);
         let active = windows.iter().any(|&(a, b, _)| f >= a && f <= b);
         recording.store(active, std::sync::atomic::Ordering::Relaxed);
         nds.run_frame();
@@ -262,6 +333,12 @@ fn main() {
             }
         }
 
+        for (rf, path) in &ram_at {
+            if *rf == f {
+                std::fs::write(path, nds.main_ram()).unwrap();
+                println!("[{f:5}] ram -> {path}");
+            }
+        }
         if shot_at.contains(&f) {
             if let Some((top, bottom)) = nds.framebuffers() {
                 let mut img = image::RgbImage::new(256, 384);
