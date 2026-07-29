@@ -138,20 +138,14 @@ fn main() {
     // Read once per probe hit, so it has to be as cheap as the coverage gate.
     let probing = Arc::new(std::sync::atomic::AtomicBool::new(probe_from == 0));
     // site -> (addr, byte), applied on the way into a redirect.
-    let pokes: HashMap<u32, (u32, u8)> = opt
-        .get("poke")
-        .map(|v| {
-            v.iter()
-                .map(|w| {
-                    let mut it = w.split(':');
-                    let site = parse_hex(it.next().unwrap());
-                    let addr = parse_hex(it.next().unwrap());
-                    let byte = u8::from_str_radix(it.next().unwrap(), 16).unwrap();
-                    (site, (addr, byte))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut pokes: HashMap<u32, Vec<(u32, u8)>> = HashMap::new();
+    for w in opt.get("poke").into_iter().flatten() {
+        let mut it = w.split(':');
+        let site = parse_hex(it.next().unwrap());
+        let addr = parse_hex(it.next().unwrap());
+        let byte = u8::from_str_radix(it.next().unwrap(), 16).unwrap();
+        pokes.entry(site).or_default().push((addr, byte));
+    }
     // site -> (reg, value)
     let setregs: HashMap<u32, (u32, u32)> = opt
         .get("setreg")
@@ -198,13 +192,13 @@ fn main() {
         for &(site, target) in &redirects {
             traps.retain(|(addr, _)| *addr != site);
             let fired = fired.clone();
-            let poke = pokes.get(&site).copied();
+            let poke = pokes.get(&site).cloned().unwrap_or_default();
             let setreg = setregs.get(&site).copied();
             traps.push((
                 site,
                 Box::new(move |nds: &mut melonds::Nds| {
                     *fired.lock().unwrap().entry(site).or_default() += 1;
-                    if let Some((addr, byte)) = poke {
+                    for &(addr, byte) in &poke {
                         nds.write8(addr, byte);
                     }
                     if let Some((reg, val)) = setreg {
@@ -233,7 +227,7 @@ fn main() {
         for &(site, target) in &once {
             traps.retain(|(addr, _)| *addr != site);
             let fired = fired.clone();
-            let poke = pokes.get(&site).copied();
+            let poke = pokes.get(&site).cloned().unwrap_or_default();
             let setreg = setregs.get(&site).copied();
             let mut spent = false;
             traps.push((
@@ -244,7 +238,7 @@ fn main() {
                     }
                     spent = true;
                     *fired.lock().unwrap().entry(site).or_default() += 1;
-                    if let Some((addr, byte)) = poke {
+                    for &(addr, byte) in &poke {
                         nds.write8(addr, byte);
                     }
                     if let Some((reg, val)) = setreg {
