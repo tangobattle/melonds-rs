@@ -4,10 +4,13 @@
 //! they are — which is what makes a deterministic in-process link (and
 //! therefore rollback over it) possible at all.
 //!
-//! The core resolves its multiplayer and save callbacks through one
-//! process-global table ([`install_host`]), with each callback receiving
-//! the instance's `userdata`-like [`InstanceId`] so a host can tell its
-//! cores apart.
+//! Each instance carries its own [`Host`] — the callbacks for its save
+//! writes and its wireless airwaves — handed over at [`Nds::new`] and
+//! owned by the instance, the way its trap table is. The core's
+//! platform layer is still link-time global underneath, but its
+//! `userdata` pointer is per instance, so nothing above the FFI shim
+//! is: the one process-global hook left is [`install_logger`], because
+//! the core's log callback is the one that carries no instance.
 
 use std::sync::OnceLock;
 
@@ -31,18 +34,12 @@ pub mod keys {
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 192;
 
-/// Which instance a host callback is about. This is the `token` passed
-/// to [`Nds::new`] — the host's own routing handle, distinct from the
-/// wireless identity: a host juggling several consoles over time (say,
-/// a new link created while an old one winds down) needs callbacks it
-/// can attribute to the right one, while the MAC-forming id has to stay
-/// identical across every peer simulating the same pair.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub struct InstanceId(pub usize);
-
-/// The host half of the platform: save persistence and the wireless
-/// airwaves. One per process (melonDS's platform layer is link-time
-/// global); install it before creating any [`Nds`].
+/// One instance's half of the platform: save persistence and the
+/// wireless airwaves, owned by the [`Nds`] it answers for — handed over
+/// at [`Nds::new`] and dropped with the instance, so there is no
+/// registration to keep in sync and no callback that can outlive what
+/// it routes to. The defaults are a console with nothing attached:
+/// sends vanish (claiming success), receives report not-connected.
 ///
 /// MP semantics mirror melonDS `Platform::MP_*`: `timestamp` is the
 /// sender's emulated wifi microsecond clock; receive methods fill `data`
@@ -51,32 +48,31 @@ pub struct InstanceId(pub usize);
 /// responding client's reply at `aid * 1024` into `data` and returns the
 /// bitmask of aids that replied.
 #[allow(unused_variables)]
-pub trait Host: Send + Sync {
-    fn log(&self, level: i32, msg: &str) {}
-    fn write_save(&self, inst: InstanceId, data: &[u8], writeoffset: u32, writelen: u32) {}
-    fn signal_stop(&self, inst: InstanceId, reason: i32) {}
+pub trait Host: Send {
+    fn write_save(&self, data: &[u8], writeoffset: u32, writelen: u32) {}
+    fn signal_stop(&self, reason: i32) {}
 
-    fn mp_begin(&self, inst: InstanceId) {}
-    fn mp_end(&self, inst: InstanceId) {}
-    fn mp_send_packet(&self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
+    fn mp_begin(&self) {}
+    fn mp_end(&self) {}
+    fn mp_send_packet(&self, data: &[u8], timestamp: u64) -> i32 {
         data.len() as i32
     }
-    fn mp_recv_packet(&self, inst: InstanceId, data: &mut [u8], now: u64, timestamp: &mut u64) -> Option<i32> {
+    fn mp_recv_packet(&self, data: &mut [u8], now: u64, timestamp: &mut u64) -> Option<i32> {
         Some(0)
     }
-    fn mp_send_cmd(&self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
+    fn mp_send_cmd(&self, data: &[u8], timestamp: u64) -> i32 {
         data.len() as i32
     }
-    fn mp_send_reply(&self, inst: InstanceId, data: &[u8], timestamp: u64, aid: u16) -> i32 {
+    fn mp_send_reply(&self, data: &[u8], timestamp: u64, aid: u16) -> i32 {
         data.len() as i32
     }
-    fn mp_send_ack(&self, inst: InstanceId, data: &[u8], timestamp: u64) -> i32 {
+    fn mp_send_ack(&self, data: &[u8], timestamp: u64) -> i32 {
         data.len() as i32
     }
-    fn mp_recv_host_packet(&self, inst: InstanceId, data: &mut [u8], now: u64, timestamp: &mut u64) -> Option<i32> {
+    fn mp_recv_host_packet(&self, data: &mut [u8], now: u64, timestamp: &mut u64) -> Option<i32> {
         None
     }
-    fn mp_recv_replies(&self, inst: InstanceId, data: &mut [u8], now: u64, timestamp: u64, aidmask: u16) -> u16 {
+    fn mp_recv_replies(&self, data: &mut [u8], now: u64, timestamp: u64, aidmask: u16) -> u16 {
         0
     }
 
@@ -85,43 +81,47 @@ pub trait Host: Send + Sync {
     /// carry their own `now` — together these let a host gate frame
     /// delivery on emulated time alone, so the two consoles of a pair
     /// can run concurrently without losing determinism.
-    fn mp_clock(&self, inst: InstanceId, now: u64) {}
+    fn mp_clock(&self, now: u64) {}
 }
-
-static HOST: OnceLock<Box<dyn Host + Send + Sync>> = OnceLock::new();
 
 /// Receive buffers are sized for the biggest frame the wifi hardware
 /// moves (see melonDS `kMaxFrameSize` = 0x948); recv_replies packs up to
 /// 16 aid slots of 1024 bytes.
 const RECV_BUF: usize = 16 * 1024;
 
-fn with_host<R>(f: impl FnOnce(&dyn Host) -> R) -> Option<R> {
-    Some(f(&**HOST.get()?))
-}
+static LOGGER: OnceLock<Box<dyn Fn(i32, &str) + Send + Sync>> = OnceLock::new();
 
-/// Install the process-global [`Host`]. May be called once; later calls
-/// return the rejected host as an error.
-pub fn install_host(host: Box<dyn Host + Send + Sync>) -> Result<(), Box<dyn Host + Send + Sync>> {
-    let mut candidate = Some(host);
-    HOST.get_or_init(|| candidate.take().unwrap());
+/// Route the core's log lines. Process-global because the core's log
+/// callback is the one platform hook that carries no instance — melonDS
+/// logs from before any instance exists. May be called once; later
+/// calls return the rejected logger as an error. Uninstalled, log lines
+/// are dropped.
+#[allow(clippy::type_complexity)]
+pub fn install_logger(
+    logger: Box<dyn Fn(i32, &str) + Send + Sync>,
+) -> Result<(), Box<dyn Fn(i32, &str) + Send + Sync>> {
+    let mut candidate = Some(logger);
+    LOGGER.get_or_init(|| candidate.take().unwrap());
     match candidate {
-        None => {
-            unsafe {
-                melonds_sys::mds_set_host_vtable(&VTABLE);
-            }
-            Ok(())
-        }
+        None => Ok(()),
         Some(rejected) => Err(rejected),
     }
 }
 
-unsafe fn inst_of(userdata: *mut std::ffi::c_void) -> InstanceId {
-    InstanceId(userdata as usize)
+/// The instance's own [`Host`], back out of the `userdata` pointer the
+/// core threads through every platform call. The pointee is the boxed
+/// trait object [`Nds::new`] parked in the instance, alive for as long
+/// as the instance is — and the core only calls while inside an `mds_*`
+/// entry point on that instance.
+unsafe fn host_of<'a>(userdata: *mut std::ffi::c_void) -> &'a dyn Host {
+    &**(userdata as *const Box<dyn Host>)
 }
 
 unsafe extern "C" fn host_log(level: i32, msg: *const std::ffi::c_char) {
-    let msg = std::ffi::CStr::from_ptr(msg).to_string_lossy();
-    with_host(|h| h.log(level, msg.trim_end()));
+    if let Some(logger) = LOGGER.get() {
+        let msg = std::ffi::CStr::from_ptr(msg).to_string_lossy();
+        logger(level, msg.trim_end());
+    }
 }
 
 unsafe extern "C" fn host_write_save(
@@ -132,19 +132,19 @@ unsafe extern "C" fn host_write_save(
     writelen: u32,
 ) {
     let data = std::slice::from_raw_parts(data, len as usize);
-    with_host(|h| h.write_save(inst_of(userdata), data, writeoffset, writelen));
+    host_of(userdata).write_save(data, writeoffset, writelen);
 }
 
 unsafe extern "C" fn host_signal_stop(userdata: *mut std::ffi::c_void, reason: i32) {
-    with_host(|h| h.signal_stop(inst_of(userdata), reason));
+    host_of(userdata).signal_stop(reason);
 }
 
 unsafe extern "C" fn host_mp_begin(userdata: *mut std::ffi::c_void) {
-    with_host(|h| h.mp_begin(inst_of(userdata)));
+    host_of(userdata).mp_begin();
 }
 
 unsafe extern "C" fn host_mp_end(userdata: *mut std::ffi::c_void) {
-    with_host(|h| h.mp_end(inst_of(userdata)));
+    host_of(userdata).mp_end();
 }
 
 unsafe extern "C" fn host_mp_send_packet(
@@ -154,7 +154,7 @@ unsafe extern "C" fn host_mp_send_packet(
     timestamp: u64,
 ) -> i32 {
     let data = std::slice::from_raw_parts(data, len as usize);
-    with_host(|h| h.mp_send_packet(inst_of(userdata), data, timestamp)).unwrap_or(len)
+    host_of(userdata).mp_send_packet(data, timestamp)
 }
 
 unsafe extern "C" fn host_mp_recv_packet(
@@ -165,9 +165,7 @@ unsafe extern "C" fn host_mp_recv_packet(
 ) -> i32 {
     let data = std::slice::from_raw_parts_mut(data, RECV_BUF);
     let mut ts = 0u64;
-    let r = with_host(|h| h.mp_recv_packet(inst_of(userdata), data, now, &mut ts))
-        .flatten()
-        .unwrap_or(0);
+    let r = host_of(userdata).mp_recv_packet(data, now, &mut ts).unwrap_or(0);
     if !timestamp.is_null() {
         *timestamp = ts;
     }
@@ -181,7 +179,7 @@ unsafe extern "C" fn host_mp_send_cmd(
     timestamp: u64,
 ) -> i32 {
     let data = std::slice::from_raw_parts(data, len as usize);
-    with_host(|h| h.mp_send_cmd(inst_of(userdata), data, timestamp)).unwrap_or(len)
+    host_of(userdata).mp_send_cmd(data, timestamp)
 }
 
 unsafe extern "C" fn host_mp_send_reply(
@@ -192,7 +190,7 @@ unsafe extern "C" fn host_mp_send_reply(
     aid: u16,
 ) -> i32 {
     let data = std::slice::from_raw_parts(data, len as usize);
-    with_host(|h| h.mp_send_reply(inst_of(userdata), data, timestamp, aid)).unwrap_or(len)
+    host_of(userdata).mp_send_reply(data, timestamp, aid)
 }
 
 unsafe extern "C" fn host_mp_send_ack(
@@ -202,7 +200,7 @@ unsafe extern "C" fn host_mp_send_ack(
     timestamp: u64,
 ) -> i32 {
     let data = std::slice::from_raw_parts(data, len as usize);
-    with_host(|h| h.mp_send_ack(inst_of(userdata), data, timestamp)).unwrap_or(len)
+    host_of(userdata).mp_send_ack(data, timestamp)
 }
 
 unsafe extern "C" fn host_mp_recv_host_packet(
@@ -213,9 +211,7 @@ unsafe extern "C" fn host_mp_recv_host_packet(
 ) -> i32 {
     let data = std::slice::from_raw_parts_mut(data, RECV_BUF);
     let mut ts = 0u64;
-    let r = with_host(|h| h.mp_recv_host_packet(inst_of(userdata), data, now, &mut ts))
-        .flatten()
-        .unwrap_or(-1);
+    let r = host_of(userdata).mp_recv_host_packet(data, now, &mut ts).unwrap_or(-1);
     if !timestamp.is_null() {
         *timestamp = ts;
     }
@@ -230,11 +226,11 @@ unsafe extern "C" fn host_mp_recv_replies(
     aidmask: u16,
 ) -> u16 {
     let data = std::slice::from_raw_parts_mut(data, RECV_BUF);
-    with_host(|h| h.mp_recv_replies(inst_of(userdata), data, now, timestamp, aidmask)).unwrap_or(0)
+    host_of(userdata).mp_recv_replies(data, now, timestamp, aidmask)
 }
 
 unsafe extern "C" fn host_mp_clock(userdata: *mut std::ffi::c_void, now: u64) {
-    with_host(|h| h.mp_clock(inst_of(userdata), now));
+    host_of(userdata).mp_clock(now);
 }
 
 static VTABLE: melonds_sys::MdsHostVtable = melonds_sys::MdsHostVtable {
@@ -257,6 +253,11 @@ static VTABLE: melonds_sys::MdsHostVtable = melonds_sys::MdsHostVtable {
 pub struct Nds {
     ptr: *mut melonds_sys::MdsNds,
     state_buf_hint: usize,
+    /// The instance's [`Host`], double-boxed so the core's `userdata`
+    /// can be a thin pointer to it. Kept alive for as long as the core
+    /// holds that pointer — the same lifetime contract as the trap
+    /// tables. `None` only on the borrowed wrapper a trap handler gets.
+    host: Option<Box<Box<dyn Host>>>,
     /// Kept alive for as long as the core holds a pointer to it; see
     /// [`Nds::set_traps`].
     traps: Option<Box<TrapTable>>,
@@ -285,6 +286,7 @@ unsafe extern "C" fn trap_trampoline(userdata: *mut std::ffi::c_void, addr: u32)
     let mut nds = Nds {
         ptr: table.ptr,
         state_buf_hint: 0,
+        host: None,
         traps: None,
         traps7: None,
     };
@@ -313,7 +315,14 @@ impl Nds {
     /// simulation, so a linked pair uses 0 and 1 on every peer — while
     /// `token` is the value host callbacks carry as [`InstanceId`],
     /// free for the host to make process-unique.
-    pub fn new(rom: &[u8], save: Option<&[u8]>, instance_id: u32, token: usize) -> Result<Self, Error> {
+    pub fn new(rom: &[u8], save: Option<&[u8]>, instance_id: u32, host: Box<dyn Host>) -> Result<Self, Error> {
+        // The vtable is static and identical for every instance; what
+        // varies per instance rides in `userdata`.
+        static VTABLE_INSTALLED: std::sync::Once = std::sync::Once::new();
+        VTABLE_INSTALLED.call_once(|| unsafe {
+            melonds_sys::mds_set_host_vtable(&VTABLE);
+        });
+        let host = Box::new(host);
         let (save_ptr, save_len) = match save {
             Some(s) => (s.as_ptr(), s.len() as u32),
             None => (std::ptr::null(), 0),
@@ -325,7 +334,7 @@ impl Nds {
                 save_ptr,
                 save_len,
                 instance_id as i32,
-                token as *mut std::ffi::c_void,
+                &*host as *const Box<dyn Host> as *mut std::ffi::c_void,
             )
         };
         if ptr.is_null() {
@@ -334,6 +343,7 @@ impl Nds {
         Ok(Nds {
             ptr,
             state_buf_hint: 0,
+            host: Some(host),
             traps: None,
             traps7: None,
         })
@@ -656,6 +666,8 @@ impl Nds {
 
 impl Drop for Nds {
     fn drop(&mut self) {
+        // The host box (a field) drops after this body, so the core is
+        // gone before the pointer it held goes stale.
         unsafe { melonds_sys::mds_nds_free(self.ptr) }
     }
 }
