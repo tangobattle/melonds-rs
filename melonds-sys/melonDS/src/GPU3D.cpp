@@ -149,15 +149,36 @@ GPU3D::GPU3D(melonDS::GPU& gpu) noexcept :
 
 void Vertex::DoSavestate(Savestate* file) noexcept
 {
-    file->VarArray(Position, sizeof(Position));
-    file->VarArray(Color, sizeof(Color));
-    file->VarArray(TexCoords, sizeof(TexCoords));
-
-    file->Bool32(&Clipped);
-
-    file->VarArray(FinalPosition, sizeof(FinalPosition));
-    file->VarArray(FinalColor, sizeof(FinalColor));
-    file->VarArray(HiresPosition, sizeof(HiresPosition));
+    // One packed 64-byte record per vertex instead of seven separately
+    // bounds-checked writes: VertexRAM serializes thousands of these
+    // per savestate, and the per-field overhead dominated the section.
+    // The byte layout matches the former per-field writes exactly.
+    u8 buf[64];
+    if (file->Saving)
+    {
+        memcpy(&buf[0], Position, 16);
+        memcpy(&buf[16], Color, 12);
+        memcpy(&buf[28], TexCoords, 4);
+        u32 clipped = Clipped;
+        memcpy(&buf[32], &clipped, 4);
+        memcpy(&buf[36], FinalPosition, 8);
+        memcpy(&buf[44], FinalColor, 12);
+        memcpy(&buf[56], HiresPosition, 8);
+        file->VarSmall(buf, 64);
+    }
+    else
+    {
+        file->VarSmall(buf, 64);
+        memcpy(Position, &buf[0], 16);
+        memcpy(Color, &buf[16], 12);
+        memcpy(TexCoords, &buf[28], 4);
+        u32 clipped;
+        memcpy(&clipped, &buf[32], 4);
+        Clipped = clipped != 0;
+        memcpy(FinalPosition, &buf[36], 8);
+        memcpy(FinalColor, &buf[44], 12);
+        memcpy(HiresPosition, &buf[56], 8);
+    }
 }
 
 void GPU3D::ResetRenderingState() noexcept
@@ -413,59 +434,80 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
     {
         Polygon* poly = &PolygonRAM[i];
 
-        // this is a bit ugly, but eh
-        // we can't save the pointers as-is, that's a bad idea
+        // Same packing story as Vertex::DoSavestate: one 188-byte
+        // record, byte-compatible with the former per-field writes
+        // (which always ran with the Type field — every state this
+        // core loads is its own, far past version 4.1). Pointers still
+        // travel as indices.
+        u8 buf[188];
+        u32 v;
         if (file->Saving)
         {
             for (int j = 0; j < 10; j++)
             {
                 Vertex* ptr = poly->Vertices[j];
-                u32 index = ptr ? (u32)(ptr - &VertexRAM[0]) : UINT32_MAX;
-                file->Var32(&index);
+                v = ptr ? (u32)(ptr - &VertexRAM[0]) : UINT32_MAX;
+                memcpy(&buf[j * 4], &v, 4);
             }
+            memcpy(&buf[40], &poly->NumVertices, 4);
+            memcpy(&buf[44], poly->FinalZ, 40);
+            memcpy(&buf[84], poly->FinalW, 40);
+            v = poly->WBuffer;
+            memcpy(&buf[124], &v, 4);
+            memcpy(&buf[128], &poly->Attr, 4);
+            memcpy(&buf[132], &poly->TexParam, 4);
+            memcpy(&buf[136], &poly->TexPalette, 4);
+            v = poly->FacingView;
+            memcpy(&buf[140], &v, 4);
+            v = poly->Translucent;
+            memcpy(&buf[144], &v, 4);
+            v = poly->IsShadowMask;
+            memcpy(&buf[148], &v, 4);
+            v = poly->IsShadow;
+            memcpy(&buf[152], &v, 4);
+            memcpy(&buf[156], &poly->Type, 4);
+            memcpy(&buf[160], &poly->VTop, 4);
+            memcpy(&buf[164], &poly->VBottom, 4);
+            memcpy(&buf[168], &poly->YTop, 4);
+            memcpy(&buf[172], &poly->YBottom, 4);
+            memcpy(&buf[176], &poly->XTop, 4);
+            memcpy(&buf[180], &poly->XBottom, 4);
+            memcpy(&buf[184], &poly->SortKey, 4);
+            file->VarSmall(buf, 188);
         }
         else
         {
+            file->VarSmall(buf, 188);
             for (int j = 0; j < 10; j++)
             {
-                u32 index = UINT32_MAX;
-                file->Var32(&index);
-                poly->Vertices[j] = index == UINT32_MAX ? nullptr : &VertexRAM[index];
+                memcpy(&v, &buf[j * 4], 4);
+                poly->Vertices[j] = v == UINT32_MAX ? nullptr : &VertexRAM[v];
             }
-        }
+            memcpy(&poly->NumVertices, &buf[40], 4);
+            memcpy(poly->FinalZ, &buf[44], 40);
+            memcpy(poly->FinalW, &buf[84], 40);
+            memcpy(&v, &buf[124], 4);
+            poly->WBuffer = v != 0;
+            memcpy(&poly->Attr, &buf[128], 4);
+            memcpy(&poly->TexParam, &buf[132], 4);
+            memcpy(&poly->TexPalette, &buf[136], 4);
+            memcpy(&v, &buf[140], 4);
+            poly->FacingView = v != 0;
+            memcpy(&v, &buf[144], 4);
+            poly->Translucent = v != 0;
+            memcpy(&v, &buf[148], 4);
+            poly->IsShadowMask = v != 0;
+            memcpy(&v, &buf[152], 4);
+            poly->IsShadow = v != 0;
+            memcpy(&poly->Type, &buf[156], 4);
+            memcpy(&poly->VTop, &buf[160], 4);
+            memcpy(&poly->VBottom, &buf[164], 4);
+            memcpy(&poly->YTop, &buf[168], 4);
+            memcpy(&poly->YBottom, &buf[172], 4);
+            memcpy(&poly->XTop, &buf[176], 4);
+            memcpy(&poly->XBottom, &buf[180], 4);
+            memcpy(&poly->SortKey, &buf[184], 4);
 
-        file->Var32(&poly->NumVertices);
-
-        file->VarArray(poly->FinalZ, sizeof(s32)*10);
-        file->VarArray(poly->FinalW, sizeof(s32)*10);
-        file->Bool32(&poly->WBuffer);
-
-        file->Var32(&poly->Attr);
-        file->Var32(&poly->TexParam);
-        file->Var32(&poly->TexPalette);
-
-        file->Bool32(&poly->FacingView);
-        file->Bool32(&poly->Translucent);
-
-        file->Bool32(&poly->IsShadowMask);
-        file->Bool32(&poly->IsShadow);
-
-        if (file->IsAtLeastVersion(4, 1))
-            file->Var32((u32*)&poly->Type);
-        else
-            poly->Type = 0;
-
-        file->Var32(&poly->VTop);
-        file->Var32(&poly->VBottom);
-        file->Var32((u32*)&poly->YTop);
-        file->Var32((u32*)&poly->YBottom);
-        file->Var32((u32*)&poly->XTop);
-        file->Var32((u32*)&poly->XBottom);
-
-        file->Var32(&poly->SortKey);
-
-        if (!file->Saving)
-        {
             poly->Degenerate = false;
 
             for (u32 j = 0; j < poly->NumVertices; j++)

@@ -31,11 +31,14 @@ pub mod keys {
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 192;
 
-/// Which instance a host callback is about. This is the `instance_id`
-/// passed to [`Nds::new`] (also the value mixed into the firmware MAC,
-/// so it doubles as the instance's wireless identity).
+/// Which instance a host callback is about. This is the `token` passed
+/// to [`Nds::new`] — the host's own routing handle, distinct from the
+/// wireless identity: a host juggling several consoles over time (say,
+/// a new link created while an old one winds down) needs callbacks it
+/// can attribute to the right one, while the MAC-forming id has to stay
+/// identical across every peer simulating the same pair.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
-pub struct InstanceId(pub u32);
+pub struct InstanceId(pub usize);
 
 /// The host half of the platform: save persistence and the wireless
 /// airwaves. One per process (melonDS's platform layer is link-time
@@ -113,7 +116,7 @@ pub fn install_host(host: Box<dyn Host + Send + Sync>) -> Result<(), Box<dyn Hos
 }
 
 unsafe fn inst_of(userdata: *mut std::ffi::c_void) -> InstanceId {
-    InstanceId(userdata as usize as u32)
+    InstanceId(userdata as usize)
 }
 
 unsafe extern "C" fn host_log(level: i32, msg: *const std::ffi::c_char) {
@@ -271,9 +274,11 @@ pub enum Error {
 
 impl Nds {
     /// Boot a retail cart with FreeBIOS + generated firmware. The
-    /// firmware MAC is uniquified by `instance_id`, which also becomes
-    /// the id host callbacks see; a linked pair should use 0 and 1.
-    pub fn new(rom: &[u8], save: Option<&[u8]>, instance_id: u32) -> Result<Self, Error> {
+    /// firmware MAC is uniquified by `instance_id` — part of the
+    /// simulation, so a linked pair uses 0 and 1 on every peer — while
+    /// `token` is the value host callbacks carry as [`InstanceId`],
+    /// free for the host to make process-unique.
+    pub fn new(rom: &[u8], save: Option<&[u8]>, instance_id: u32, token: usize) -> Result<Self, Error> {
         let (save_ptr, save_len) = match save {
             Some(s) => (s.as_ptr(), s.len() as u32),
             None => (std::ptr::null(), 0),
@@ -285,7 +290,7 @@ impl Nds {
                 save_ptr,
                 save_len,
                 instance_id as i32,
-                instance_id as usize as *mut std::ffi::c_void,
+                token as *mut std::ffi::c_void,
             )
         };
         if ptr.is_null() {

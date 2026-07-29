@@ -274,8 +274,8 @@ fn main() {
 
     let rom = std::fs::read(&rom_path).expect("failed to read rom");
     let mut pair = [
-        melonds::Nds::new(&rom, save.as_deref(), 0).expect("cart rejected"),
-        melonds::Nds::new(&rom, save.as_deref(), 1).expect("cart rejected"),
+        melonds::Nds::new(&rom, save.as_deref(), 0, 0).expect("cart rejected"),
+        melonds::Nds::new(&rom, save.as_deref(), 1, 1).expect("cart rejected"),
     ];
     for nds in &mut pair {
         nds.set_rtc(2026, 1, 1, 0, 0, 0);

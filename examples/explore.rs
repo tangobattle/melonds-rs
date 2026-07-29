@@ -59,7 +59,7 @@ fn main() {
     let save = args.get(3).map(|p| std::fs::read(p).expect("failed to read save"));
 
     let rom = std::fs::read(rom_path).expect("failed to read rom");
-    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0).expect("cart rejected");
+    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, 0).expect("cart rejected");
     nds.set_rtc(2026, 1, 1, 0, 0, 0);
     nds.boot();
 

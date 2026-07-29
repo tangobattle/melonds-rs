@@ -30,7 +30,7 @@ fn main() {
     let rom = std::fs::read(&rom_path).expect("failed to read rom");
     println!("rom: {} ({} MiB)", rom_path, rom.len() >> 20);
 
-    let mut nds = melonds::Nds::new(&rom, None, 0).expect("cart rejected");
+    let mut nds = melonds::Nds::new(&rom, None, 0, 0).expect("cart rejected");
     nds.set_rtc(2026, 1, 1, 0, 0, 0);
     nds.boot();
 
