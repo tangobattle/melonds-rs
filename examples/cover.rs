@@ -17,6 +17,14 @@
 //!   --watch ADDR:LEN  print hex when a main-RAM range changes
 //!   --redirect S:T    whenever the ARM9 reaches S, jump it to T instead
 //!                     (repeatable) — for trying out a priming anchor
+//!   --guard S:T:ADDR:VAL:REG:RVAL  redirect S to T only while the u32 at
+//!                     ADDR reads VAL, optionally setting register REG to
+//!                     RVAL first (REG 99 = don't). Repeatable per site and
+//!                     tried in order, so one site can answer several
+//!                     different situations by what the game currently is.
+//!   --redirect-after S:T:N  the same, but only once S has been reached N
+//!                     times first — a delay measured in the game's own
+//!                     spinning rather than in frames
 //!   --redirect-once S:T  the same, but only the first time S is reached —
 //!                     for an anchor that must fire once and then let the
 //!                     game carry on normally
@@ -122,6 +130,32 @@ fn main() {
                 .collect()
         })
         .unwrap_or_default();
+    let after: Vec<(u32, u32, usize)> = opt
+        .get("redirect-after")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let mut it = w.split(':');
+                    let s = parse_hex(it.next().unwrap());
+                    let t = parse_hex(it.next().unwrap());
+                    let n: usize = it.next().unwrap().parse().unwrap();
+                    (s, t, n)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut guards: HashMap<u32, Vec<(u32, u32, u32, u32, u32)>> = HashMap::new();
+    for w in opt.get("guard").into_iter().flatten() {
+        let f: Vec<&str> = w.split(':').collect();
+        let site = parse_hex(f[0]);
+        guards.entry(site).or_default().push((
+            parse_hex(f[1]),
+            parse_hex(f[2]),
+            parse_hex(f[3]),
+            f[4].parse().unwrap(),
+            parse_hex(f[5]),
+        ));
+    }
     let once: Vec<(u32, u32)> = opt
         .get("redirect-once")
         .map(|v| {
@@ -163,7 +197,7 @@ fn main() {
         .unwrap_or_default();
     let fired: Arc<Mutex<HashMap<u32, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    if !windows.is_empty() || !redirects.is_empty() || !once.is_empty() || !probes.is_empty() {
+    if !windows.is_empty() || !redirects.is_empty() || !once.is_empty() || !after.is_empty() || !guards.is_empty() || !probes.is_empty() {
         // Every halfword address in the range, because a trap only
         // reports for an address that was registered. The range is the
         // cart's code by default; widening it costs memory per address,
@@ -221,6 +255,43 @@ fn main() {
                     seen += 1;
                     let regs: Vec<String> = (0..8).map(|i| format!("r{i}={:08x}", nds.reg(i))).collect();
                     println!("probe {site:08x} #{seen}: {}", regs.join(" "));
+                }),
+            ));
+        }
+        for (&site, rules) in &guards {
+            traps.retain(|(addr, _)| *addr != site);
+            let fired = fired.clone();
+            let rules = rules.clone();
+            traps.push((
+                site,
+                Box::new(move |nds: &mut melonds::Nds| {
+                    for &(target, addr, val, reg, rval) in &rules {
+                        if nds.read32(addr) != val {
+                            continue;
+                        }
+                        *fired.lock().unwrap().entry(site).or_default() += 1;
+                        if reg < 16 {
+                            nds.set_reg(reg, rval);
+                        }
+                        nds.jump_here(target);
+                        return;
+                    }
+                }),
+            ));
+        }
+        for &(site, target, n) in &after {
+            traps.retain(|(addr, _)| *addr != site);
+            let fired = fired.clone();
+            let mut seen = 0usize;
+            traps.push((
+                site,
+                Box::new(move |nds: &mut melonds::Nds| {
+                    seen += 1;
+                    if seen <= n {
+                        return;
+                    }
+                    *fired.lock().unwrap().entry(site).or_default() += 1;
+                    nds.jump_here(target);
                 }),
             ));
         }
