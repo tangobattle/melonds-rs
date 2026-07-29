@@ -324,10 +324,11 @@ void Wifi::ScheduleTimer(bool first)
 {
     if (first) TimerError = 0;
 
-    s32 cycles = 33513982 * kTimerInterval;
+    // 64-bit: 33513982 * interval * batch brushes against s32 range.
+    s64 cycles = 33513982LL * kTimerInterval * kTimerBatch;
     cycles -= TimerError;
-    s32 delay = (cycles + 999999) / 1000000;
-    TimerError = (delay * 1000000) - cycles;
+    s32 delay = (s32)((cycles + 999999) / 1000000);
+    TimerError = (s32)((s64)delay * 1000000 - cycles);
 
     NDS.ScheduleEvent(Event_Wifi, !first, delay, 0, 0);
 }
@@ -1762,6 +1763,18 @@ void Wifi::MSTimer()
 
 void Wifi::USTimer(u32 param)
 {
+    for (int i = 0; i < kTimerBatch; i++)
+        USTimerStep();
+    ScheduleTimer(false);
+
+    // Everything at or before USTimestamp is fully processed: any
+    // future MP send is strictly later. Publishing this is what lets
+    // the other console of an in-process pair run concurrently.
+    Platform::MP_USClock(USTimestamp, NDS.UserData);
+}
+
+void Wifi::USTimerStep()
+{
     USTimestamp += kTimerInterval;
 
     if (IsMPClient && (!ComStatus))
@@ -1940,8 +1953,6 @@ void Wifi::USTimer(u32 param)
             }
         }
     }
-
-    ScheduleTimer(false);
 }
 
 

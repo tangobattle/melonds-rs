@@ -166,6 +166,12 @@ public:
     void SetPowerCnt(u32 val);
 
     void USTimer(u32 param);
+    void USTimerStep();
+
+    // The emulated wifi microsecond clock — the timebase MP frame
+    // timestamps are in. The embedder reads it to gate deterministic
+    // cross-instance frame delivery.
+    u64 GetUSTimestamp() const { return USTimestamp; }
 
     u16 Read(u32 addr);
     void Write(u32 addr, u16 val);
@@ -184,6 +190,11 @@ private:
 
     static const int kTimerInterval = 8;
     static const u32 kTimeCheckMask = ~(kTimerInterval - 1);
+    // How many 8us steps one scheduler event covers. The wifi state
+    // machine still advances in exact 8us substeps — batching only
+    // coarsens when the CPUs get to observe it (IRQs, registers, RAM),
+    // which in turn lets the JIT run far longer uninterrupted slices.
+    static const int kTimerBatch = 8;
 
     bool Enabled;
     bool PowerOn;
