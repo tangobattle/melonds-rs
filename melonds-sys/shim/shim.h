@@ -102,6 +102,14 @@ void mds_arm9_write8(MdsNds* nds, uint32_t addr, uint8_t val);
 // trap-anchor scouting, and what a trap handler sees as its site.
 uint32_t mds_arm9_pc(MdsNds* nds);
 
+// One ARM9 general register, 0-15 (15 is the raw prefetch pointer, not
+// the instruction address — see mds_arm9_pc). Reading r4 inside a trap
+// is how a handler finds the object the trapped function was working
+// on, which is what lets it write the selection an organic confirm
+// would have read.
+uint32_t mds_arm9_reg(MdsNds* nds, uint32_t i);
+void mds_arm9_set_reg(MdsNds* nds, uint32_t i, uint32_t val);
+
 // Whether the ARM9 is executing Thumb — which is what decides bit 0 of
 // a mds_arm9_jump target.
 int mds_arm9_thumb(MdsNds* nds);

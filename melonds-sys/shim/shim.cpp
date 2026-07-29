@@ -188,6 +188,17 @@ uint32_t mds_arm9_pc(MdsNds* w)
     return cpu.R[15] - ((cpu.CPSR & 0x20) ? 2 : 4);
 }
 
+uint32_t mds_arm9_reg(MdsNds* w, uint32_t i)
+{
+    return i < 16 ? w->nds->ARM9.R[i] : 0;
+}
+
+void mds_arm9_set_reg(MdsNds* w, uint32_t i, uint32_t val)
+{
+    if (i < 16)
+        w->nds->ARM9.R[i] = val;
+}
+
 int mds_arm9_thumb(MdsNds* w)
 {
     return (w->nds->ARM9.CPSR & 0x20) ? 1 : 0;

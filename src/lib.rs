@@ -368,6 +368,21 @@ impl Nds {
         self.traps = (!addrs.is_empty()).then_some(table);
     }
 
+    /// One ARM9 general register, 0-15. Inside a trap this is how a
+    /// handler reaches the object the trapped function was working on —
+    /// reading `r4` to find a menu's state block, say, so the selection
+    /// its confirm is about to read can be written first.
+    ///
+    /// Register 15 is the raw prefetch pointer, two instructions ahead;
+    /// [`pc`](Self::pc) is the instruction's own address.
+    pub fn reg(&mut self, i: u32) -> u32 {
+        unsafe { melonds_sys::mds_arm9_reg(self.ptr, i) }
+    }
+
+    pub fn set_reg(&mut self, i: u32, val: u32) {
+        unsafe { melonds_sys::mds_arm9_set_reg(self.ptr, i, val) }
+    }
+
     /// Whether the ARM9 is executing Thumb, which is what decides bit 0
     /// of a [`jump`](Self::jump) target.
     pub fn thumb(&mut self) -> bool {

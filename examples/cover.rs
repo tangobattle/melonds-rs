@@ -17,6 +17,11 @@
 //!   --watch ADDR:LEN  print hex when a main-RAM range changes
 //!   --redirect S:T    whenever the ARM9 reaches S, jump it to T instead
 //!                     (repeatable) — for trying out a priming anchor
+//!   --redirect-once S:T  the same, but only the first time S is reached —
+//!                     for an anchor that must fire once and then let the
+//!                     game carry on normally
+//!   --probe ADDR      print r0-r7 the first few times ADDR is reached —
+//!                     for finding the object a handler is working on
 //!   --shot-at F,F,..  write console 0's screens as a PNG at these frames
 //!   --dump-dir DIR    where PNGs go (default .)
 
@@ -108,9 +113,21 @@ fn main() {
                 .collect()
         })
         .unwrap_or_default();
+    let once: Vec<(u32, u32)> = opt
+        .get("redirect-once")
+        .map(|v| {
+            v.iter()
+                .map(|w| {
+                    let (s, t) = w.split_once(':').unwrap();
+                    (parse_hex(s), parse_hex(t))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let probes: Vec<u32> = opt.get("probe").map(|v| v.iter().map(|a| parse_hex(a)).collect()).unwrap_or_default();
     let fired: Arc<Mutex<HashMap<u32, usize>>> = Arc::new(Mutex::new(HashMap::new()));
 
-    if !windows.is_empty() || !redirects.is_empty() {
+    if !windows.is_empty() || !redirects.is_empty() || !once.is_empty() || !probes.is_empty() {
         // Every halfword address in the range, because a trap only
         // reports for an address that was registered. The range is the
         // cart's code by default; widening it costs memory per address,
@@ -142,6 +159,37 @@ fn main() {
             traps.push((
                 site,
                 Box::new(move |nds: &mut melonds::Nds| {
+                    *fired.lock().unwrap().entry(site).or_default() += 1;
+                    nds.jump_here(target);
+                }),
+            ));
+        }
+        for &site in &probes {
+            traps.retain(|(addr, _)| *addr != site);
+            let mut seen = 0usize;
+            traps.push((
+                site,
+                Box::new(move |nds: &mut melonds::Nds| {
+                    if seen >= 4 {
+                        return;
+                    }
+                    seen += 1;
+                    let regs: Vec<String> = (0..8).map(|i| format!("r{i}={:08x}", nds.reg(i))).collect();
+                    println!("probe {site:08x} #{seen}: {}", regs.join(" "));
+                }),
+            ));
+        }
+        for &(site, target) in &once {
+            traps.retain(|(addr, _)| *addr != site);
+            let fired = fired.clone();
+            let mut spent = false;
+            traps.push((
+                site,
+                Box::new(move |nds: &mut melonds::Nds| {
+                    if spent {
+                        return;
+                    }
+                    spent = true;
                     *fired.lock().unwrap().entry(site).or_default() += 1;
                     nds.jump_here(target);
                 }),
