@@ -171,6 +171,11 @@ fn build_windows(manifest_dir: &Path, out_dir: &Path, melonds_dir: &Path, jit: b
             .arg("-G")
             .arg("Ninja")
             .arg("-DCMAKE_BUILD_TYPE=Release")
+            // DWARF for the whole core, so a crash offset in a user's
+            // minidump resolves to file:line. It rides in a separate
+            // .dbg next to the DLL (below), not in what ships.
+            .arg("-DCMAKE_C_FLAGS=-g")
+            .arg("-DCMAKE_CXX_FLAGS=-g")
             .arg("-DBUILD_QT_SDL=OFF")
             .arg("-DENABLE_OGLRENDERER=OFF")
             .arg("-DENABLE_GDBSTUB=OFF")
@@ -199,6 +204,7 @@ fn build_windows(manifest_dir: &Path, out_dir: &Path, melonds_dir: &Path, jit: b
         "link shim dll",
         Command::new(&gpp)
             .arg("-O2")
+            .arg("-g")
             .arg("-std=c++20")
             .arg("-shared")
             .arg("-o")
@@ -237,9 +243,48 @@ fn build_windows(manifest_dir: &Path, out_dir: &Path, melonds_dir: &Path, jit: b
             .env("PATH", &path_with_ucrt),
     );
 
-    // The import library, built by MSVC from the DLL's own export list
-    // so an x86_64-pc-windows-msvc link accepts it. This also overwrites
-    // any stale static lib left in OUT_DIR by an earlier build.
+    // The DWARF moves out into melonds_shim.dbg: a crash offset from a
+    // user's minidump still resolves to file:line through the side file
+    // (addr2line -e melonds_shim.dbg), while the DLL that actually
+    // ships stays lean.
+    let dbg = out_dir.join("melonds_shim.dbg");
+    let objcopy = bin.join("objcopy.exe");
+    run(
+        "objcopy split debug info",
+        Command::new(&objcopy).arg("--only-keep-debug").arg(&dll).arg(&dbg),
+    );
+    run(
+        "objcopy strip debug info",
+        Command::new(&objcopy)
+            .arg("--strip-debug")
+            .arg(format!("--add-gnu-debuglink={}", dbg.display()))
+            .arg(&dll),
+    );
+
+    // The import library, built by MSVC so an x86_64-pc-windows-msvc
+    // link accepts it — but not from the linker's own def: ld exports
+    // every symbol in the image and numbers them, and those ordinals
+    // shift with any change to the symbol population. lib.exe binds
+    // imports to the ordinals, welding the executable to the exact DLL
+    // build it linked against; run it beside any other build and every
+    // call lands on whatever now holds the ordinal — observed as an
+    // mds_* call executing Teakra typeinfo. Rewriting the def down to
+    // the mds_* names, ordinal-free, binds imports by name instead: a
+    // mismatched pair then either works (the C ABI is the stable part)
+    // or refuses to load with the missing name spelled out. This also
+    // overwrites any stale static lib left in OUT_DIR by an earlier
+    // build.
+    let import_def = out_dir.join("melonds_shim_import.def");
+    let mds_names: String = std::fs::read_to_string(&def)
+        .expect("failed to read linker-generated def")
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| name.starts_with("mds_"))
+        .map(|name| format!("    {name}\n"))
+        .collect();
+    assert!(!mds_names.is_empty(), "no mds_* exports in linker-generated def");
+    std::fs::write(&import_def, format!("LIBRARY melonds_shim.dll\nEXPORTS\n{mds_names}"))
+        .expect("failed to write import def");
     let cl = cc::Build::new().get_compiler();
     let lib_exe = cl.path().parent().expect("compiler has no directory").join("lib.exe");
     run(
@@ -247,7 +292,7 @@ fn build_windows(manifest_dir: &Path, out_dir: &Path, melonds_dir: &Path, jit: b
         Command::new(&lib_exe)
             .arg("/NOLOGO")
             .arg("/MACHINE:X64")
-            .arg(format!("/DEF:{}", def.display()))
+            .arg(format!("/DEF:{}", import_def.display()))
             .arg(format!("/OUT:{}", out_dir.join("melonds_shim.lib").display())),
     );
 
@@ -267,6 +312,7 @@ fn build_windows(manifest_dir: &Path, out_dir: &Path, melonds_dir: &Path, jit: b
     ] {
         if dir.exists() || std::fs::create_dir_all(&dir).is_ok() {
             let _ = std::fs::copy(&dll, dir.join("melonds_shim.dll"));
+            let _ = std::fs::copy(&dbg, dir.join("melonds_shim.dbg"));
         }
     }
 
