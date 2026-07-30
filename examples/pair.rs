@@ -64,10 +64,6 @@ impl Airwaves {
         }
     }
 
-    fn seat_of(inst: melonds::InstanceId) -> usize {
-        inst.0 as usize
-    }
-
     fn note_progress(&self, me: usize, ts: u64) {
         let mut st = self.state.lock().unwrap();
         if ts > st.seats[me].progress {
@@ -124,48 +120,52 @@ impl Airwaves {
     }
 }
 
-struct AirwavesHost(&'static Airwaves);
+/// One seat's view of the airwaves. The host is per-instance now, so the
+/// seat is a field rather than something looked up from an id the core
+/// hands back.
+struct AirwavesHost {
+    air: &'static Airwaves,
+    seat: usize,
+}
 
 impl melonds::Host for AirwavesHost {
-    fn log(&self, _level: i32, _msg: &str) {}
-
-    fn mp_begin(&self, inst: melonds::InstanceId) {
-        let mut st = self.0.state.lock().unwrap();
-        st.seats[Airwaves::seat_of(inst)].attached = true;
-        self.0.cv.notify_all();
+    fn mp_begin(&self) {
+        let mut st = self.air.state.lock().unwrap();
+        st.seats[self.seat].attached = true;
+        self.air.cv.notify_all();
     }
 
-    fn mp_end(&self, inst: melonds::InstanceId) {
-        let mut st = self.0.state.lock().unwrap();
-        st.seats[Airwaves::seat_of(inst)].attached = false;
-        self.0.cv.notify_all();
+    fn mp_end(&self) {
+        let mut st = self.air.state.lock().unwrap();
+        st.seats[self.seat].attached = false;
+        self.air.cv.notify_all();
     }
 
-    fn mp_send_packet(&self, inst: melonds::InstanceId, data: &[u8], ts: u64) -> i32 {
-        self.0.send(Airwaves::seat_of(inst), Mp::Packet { ts, data: data.to_vec() });
+    fn mp_send_packet(&self, data: &[u8], ts: u64) -> i32 {
+        self.air.send(self.seat, Mp::Packet { ts, data: data.to_vec() });
         data.len() as i32
     }
 
-    fn mp_send_cmd(&self, inst: melonds::InstanceId, data: &[u8], ts: u64) -> i32 {
-        self.0.send(Airwaves::seat_of(inst), Mp::Cmd { ts, data: data.to_vec() });
+    fn mp_send_cmd(&self, data: &[u8], ts: u64) -> i32 {
+        self.air.send(self.seat, Mp::Cmd { ts, data: data.to_vec() });
         data.len() as i32
     }
 
-    fn mp_send_reply(&self, inst: melonds::InstanceId, data: &[u8], ts: u64, aid: u16) -> i32 {
-        self.0.send(Airwaves::seat_of(inst), Mp::Reply { ts, aid, data: data.to_vec() });
+    fn mp_send_reply(&self, data: &[u8], ts: u64, aid: u16) -> i32 {
+        self.air.send(self.seat, Mp::Reply { ts, aid, data: data.to_vec() });
         data.len() as i32
     }
 
-    fn mp_send_ack(&self, inst: melonds::InstanceId, data: &[u8], ts: u64) -> i32 {
-        self.0.send(Airwaves::seat_of(inst), Mp::Ack { ts, data: data.to_vec() });
+    fn mp_send_ack(&self, data: &[u8], ts: u64) -> i32 {
+        self.air.send(self.seat, Mp::Ack { ts, data: data.to_vec() });
         data.len() as i32
     }
 
-    fn mp_recv_packet(&self, inst: melonds::InstanceId, data: &mut [u8], _now: u64, ts_out: &mut u64) -> Option<i32> {
+    fn mp_recv_packet(&self, data: &mut [u8], _now: u64, ts_out: &mut u64) -> Option<i32> {
         // Non-blocking by contract (mirrors LocalMP): whatever regular
         // traffic is already queued, or nothing.
-        let me = Airwaves::seat_of(inst);
-        let mut st = self.0.state.lock().unwrap();
+        let me = self.seat;
+        let mut st = self.air.state.lock().unwrap();
         while let Some(msg) = st.seats[me].incoming.pop_front() {
             if let Mp::Packet { ts, data: d } = msg {
                 data[..d.len()].copy_from_slice(&d);
@@ -176,25 +176,35 @@ impl melonds::Host for AirwavesHost {
         Some(0)
     }
 
-    fn mp_recv_host_packet(&self, inst: melonds::InstanceId, data: &mut [u8], _now: u64, ts_out: &mut u64) -> Option<i32> {
-        let me = Airwaves::seat_of(inst);
+    fn mp_recv_host_packet(&self, data: &mut [u8], _now: u64, ts_out: &mut u64) -> Option<i32> {
+        let me = self.seat;
         {
-            let mut st = self.0.state.lock().unwrap();
+            let mut st = self.air.state.lock().unwrap();
             if let Some(msg) = st.seats[me].incoming.pop_front() {
                 return Some(deliver(msg, data, ts_out));
             }
         }
-        let my_ts = self.0.state.lock().unwrap().seats[me].progress;
-        let mut st = self.0.wait_peer_past(me, my_ts);
+        let my_ts = self.air.state.lock().unwrap().seats[me].progress;
+        let mut st = self.air.wait_peer_past(me, my_ts);
         match st.seats[me].incoming.pop_front() {
             Some(msg) => Some(deliver(msg, data, ts_out)),
             None => None, // nothing on the air for us
         }
     }
 
-    fn mp_recv_replies(&self, inst: melonds::InstanceId, data: &mut [u8], _now: u64, ts: u64, aidmask: u16) -> u16 {
-        let me = Airwaves::seat_of(inst);
-        let mut st = self.0.wait_peer_past(me, ts + WIFI_REPLY_WINDOW_US);
+    /// The core reporting its wifi clock outside of any send or receive.
+    /// Without this a seat only publishes progress when it happens to
+    /// touch the air, so a peer parked in a receive waits out the whole
+    /// frame for a timestamp this seat is already past. The guarantee is
+    /// the same one sends carry — every frame from here on is stamped
+    /// strictly later — just delivered sooner.
+    fn mp_clock(&self, now: u64) {
+        self.air.note_progress(self.seat, now);
+    }
+
+    fn mp_recv_replies(&self, data: &mut [u8], _now: u64, ts: u64, aidmask: u16) -> u16 {
+        let me = self.seat;
+        let mut st = self.air.wait_peer_past(me, ts + WIFI_REPLY_WINDOW_US);
         let mut mask = 0u16;
         // Replies for an older cmd are stale; melonDS's LocalMP uses a
         // 32us horizon, mirrored here.
@@ -270,12 +280,14 @@ fn main() {
     let save = args.next().map(|p| std::fs::read(p).expect("failed to read save"));
 
     let air: &'static Airwaves = Box::leak(Box::new(Airwaves::new()));
-    melonds::install_host(Box::new(AirwavesHost(air))).ok().expect("host installed twice");
 
     let rom = std::fs::read(&rom_path).expect("failed to read rom");
+    // instance_id uniquifies the firmware MAC and so is part of the
+    // simulation; the seat is the host's own bookkeeping. They happen to
+    // agree here, and nothing requires them to.
     let mut pair = [
-        melonds::Nds::new(&rom, save.as_deref(), 0, 0).expect("cart rejected"),
-        melonds::Nds::new(&rom, save.as_deref(), 1, 1).expect("cart rejected"),
+        melonds::Nds::new(&rom, save.as_deref(), 0, Box::new(AirwavesHost { air, seat: 0 })).expect("cart rejected"),
+        melonds::Nds::new(&rom, save.as_deref(), 1, Box::new(AirwavesHost { air, seat: 1 })).expect("cart rejected"),
     ];
     for nds in &mut pair {
         nds.set_rtc(2026, 1, 1, 0, 0, 0);

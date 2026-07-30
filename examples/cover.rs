@@ -54,6 +54,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// Nothing on the air and nowhere to put saves: the defaults are an
+/// unlinked console, which is all a tracing run needs.
+struct Offline;
+impl melonds::Host for Offline {}
+
 fn parse_keys(s: &str) -> (u32, Option<(u16, u16)>) {
     if s == "-" {
         return (0, None);
@@ -101,7 +106,7 @@ fn main() {
 
     let rom = std::fs::read(&rom_path).unwrap();
     let save = one("save").map(|p| std::fs::read(p).unwrap());
-    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, 0).unwrap();
+    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, Box::new(Offline)).unwrap();
     nds.boot();
 
     // (start, end, path)

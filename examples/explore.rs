@@ -11,6 +11,12 @@
 //! title.png / menu.png next to <out.png>. The final state always dumps
 //! to <out.png> itself.
 
+/// Nothing on the air, and the cart save is read back at the end with
+/// `save_memory` rather than streamed: the defaults are an unlinked
+/// console, which is all a single-instance run needs.
+struct Offline;
+impl melonds::Host for Offline {}
+
 fn parse_keys(s: &str) -> u32 {
     s.split('+')
         .filter(|k| !k.is_empty())
@@ -59,7 +65,7 @@ fn main() {
     let save = args.get(3).map(|p| std::fs::read(p).expect("failed to read save"));
 
     let rom = std::fs::read(rom_path).expect("failed to read rom");
-    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, 0).expect("cart rejected");
+    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, Box::new(Offline)).expect("cart rejected");
     nds.set_rtc(2026, 1, 1, 0, 0, 0);
     nds.boot();
 

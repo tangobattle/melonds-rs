@@ -5,6 +5,11 @@
 
 use sha2::Digest;
 
+/// Nothing on the air and nowhere to put saves: the defaults are an
+/// unlinked console, which is all a single-instance run needs.
+struct Offline;
+impl melonds::Host for Offline {}
+
 fn fb_digest(nds: &mut melonds::Nds) -> String {
     let mut hasher = sha2::Sha256::new();
     if let Some((top, bottom)) = nds.framebuffers() {
@@ -30,7 +35,7 @@ fn main() {
     let rom = std::fs::read(&rom_path).expect("failed to read rom");
     println!("rom: {} ({} MiB)", rom_path, rom.len() >> 20);
 
-    let mut nds = melonds::Nds::new(&rom, None, 0, 0).expect("cart rejected");
+    let mut nds = melonds::Nds::new(&rom, None, 0, Box::new(Offline)).expect("cart rejected");
     nds.set_rtc(2026, 1, 1, 0, 0, 0);
     nds.boot();
 

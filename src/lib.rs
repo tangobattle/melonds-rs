@@ -257,7 +257,12 @@ pub struct Nds {
     /// can be a thin pointer to it. Kept alive for as long as the core
     /// holds that pointer — the same lifetime contract as the trap
     /// tables. `None` only on the borrowed wrapper a trap handler gets.
-    host: Option<Box<Box<dyn Host>>>,
+    ///
+    /// Underscored because it is never read: the core reaches the host
+    /// through `userdata`, not through here, so this field exists only
+    /// to own the allocation and to drop it after [`Drop`] has freed the
+    /// instance.
+    _host: Option<Box<Box<dyn Host>>>,
     /// Kept alive for as long as the core holds a pointer to it; see
     /// [`Nds::set_traps`].
     traps: Option<Box<TrapTable>>,
@@ -286,7 +291,7 @@ unsafe extern "C" fn trap_trampoline(userdata: *mut std::ffi::c_void, addr: u32)
     let mut nds = Nds {
         ptr: table.ptr,
         state_buf_hint: 0,
-        host: None,
+        _host: None,
         traps: None,
         traps7: None,
     };
@@ -312,9 +317,9 @@ pub enum Error {
 impl Nds {
     /// Boot a retail cart with FreeBIOS + generated firmware. The
     /// firmware MAC is uniquified by `instance_id` — part of the
-    /// simulation, so a linked pair uses 0 and 1 on every peer — while
-    /// `token` is the value host callbacks carry as [`InstanceId`],
-    /// free for the host to make process-unique.
+    /// simulation, so a linked pair uses 0 and 1 on every peer. `host`
+    /// receives this instance's callbacks and nothing else's; whatever
+    /// tells one seat from another lives in it.
     pub fn new(rom: &[u8], save: Option<&[u8]>, instance_id: u32, host: Box<dyn Host>) -> Result<Self, Error> {
         // The vtable is static and identical for every instance; what
         // varies per instance rides in `userdata`.
@@ -343,7 +348,7 @@ impl Nds {
         Ok(Nds {
             ptr,
             state_buf_hint: 0,
-            host: Some(host),
+            _host: Some(host),
             traps: None,
             traps7: None,
         })
