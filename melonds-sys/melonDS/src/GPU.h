@@ -850,6 +850,12 @@ public:
     virtual void PreSavestate() {}
     virtual void PostSavestate() {}
 
+    // A savestate was just loaded into the GPU: rebuild whatever
+    // cross-frame raster state the next frame will read but no
+    // savestate carries. The soft renderer's line-0 sprite pre-render
+    // is the known case — see SoftRenderer::PostLoadState.
+    virtual void PostLoadState() {}
+
     virtual void SetRenderSettings(RendererSettings& settings) = 0;
 
     virtual void DrawScanline(u32 line) = 0;

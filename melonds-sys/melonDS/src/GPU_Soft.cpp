@@ -84,6 +84,34 @@ void SoftRenderer::PostSavestate()
         rend3d->EnableRenderThread();
 }
 
+void SoftRenderer::PostLoadState()
+{
+    // Rasterized output is not savestate state, but the next frame
+    // composites from it — and display capture writes that composite
+    // into VRAM, which *is* state. So an instance resuming from a
+    // snapshot it did not itself produce (a fresh pair landing on a
+    // primed capture; equally a rollback restore across an armed
+    // capture) would capture some other frame's pixels and run off.
+    // Both stale buffers are rebuilt from the loaded state:
+
+    // The OBJ line buffers, whose line 0 was pre-rendered at
+    // VCount==262 of the frame *before* the snapshot. Redrawing from
+    // the loaded OAM is the same idempotent redraw the render-skip
+    // capture path relies on (see DrawScanline), with the same
+    // exposure to OAM writes landing between VCount 262 and the frame
+    // boundary.
+    Rend2D_A->DrawSprites(0);
+    Rend2D_B->DrawSprites(0);
+
+    // And the 3D color/depth/attribute buffers, filled by the render
+    // kick at VCount==215 of that same previous frame. Deferred rather
+    // than done here: re-rasterizing a scene costs far more than the
+    // sprite line, and a rollback restore whose frame is never
+    // composited or captured never reads it.
+    if (auto rend3d = dynamic_cast<SoftRenderer3D*>(Rend3D.get()))
+        rend3d->MarkRasterStale();
+}
+
 
 void SoftRenderer::SetRenderSettings(RendererSettings& settings)
 {

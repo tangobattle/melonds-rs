@@ -306,6 +306,9 @@ void GPU::DoSavestate(Savestate* file) noexcept
         ResetVRAMCache();
         OAMDirty = 0x3;
         PaletteDirty = 0x5F;
+        // After the dirty flags, so anything the rebuild draws derives
+        // its caches from the freshly loaded OAM and palettes.
+        Rend->PostLoadState();
     }
 
     Rend->PostSavestate();

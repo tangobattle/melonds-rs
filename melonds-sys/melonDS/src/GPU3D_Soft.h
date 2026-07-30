@@ -44,6 +44,16 @@ public:
 
     u32* GetLine(int line) override;
 
+    /// A savestate load made the rasterized output stale: ColorBuffer &
+    /// friends hold whatever frame this instance last rendered (or
+    /// reset-zeroes on a fresh instance), not the frame the loaded
+    /// state's VCount==215 kick had produced. The next GetLine
+    /// re-rasterizes once from the restored polygon RAM — lazily, so a
+    /// rollback restore whose frame nobody composites or captures pays
+    /// nothing. Unthreaded renderer only, which is the only way this
+    /// core is shipped (see SoftRenderer::PostLoadState).
+    void MarkRasterStale() { RasterStale = !Threaded; }
+
     void SetupRenderThread();
     void EnableRenderThread();
     void StopRenderThread();
@@ -499,6 +509,9 @@ private:
     bool Threaded = false;
     Platform::Thread* RenderThread;
     std::atomic_bool RenderThreadRunning;
+
+    // Set by MarkRasterStale, cleared by the GetLine that re-rasterizes.
+    bool RasterStale = false;
     std::atomic_bool RenderThreadRendering;
 
     // Used by the main thread to tell the render thread to start rendering a frame

@@ -1813,6 +1813,18 @@ u32* SoftRenderer3D::GetLine(int line)
         return ScrolledLine;
     }
 
+    if (RasterStale)
+    {
+        // First read since a savestate load: the buffers below hold
+        // some other frame's pixels (see MarkRasterStale). Rasterize
+        // the restored polygon RAM now, exactly as the loaded state's
+        // own VCount==215 kick did — RenderFrameIdentical is cleared by
+        // GPU3D::DoSavestate, so nothing can short-circuit it.
+        RasterStale = false;
+        ClearBuffers();
+        RenderPolygons(false, &GPU3D.RenderPolygonRAM[0], GPU3D.RenderNumPolygons);
+    }
+
     if (RenderThreadRunning.load(std::memory_order_relaxed))
     {
         if (line < 192)
