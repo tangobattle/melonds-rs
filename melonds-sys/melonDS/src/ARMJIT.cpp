@@ -585,6 +585,45 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     u32 writeAddrs[MaxBlockSize];
     u32 numWriteAddrs = 0, writeAddrsTranslated = 0;
 
+    // Compiling a block runs it through the interpreter to harvest its
+    // per-instruction timing, and that walk scribbles over the CPU's
+    // fetch-timing scratch — CodeRegion/CodeCycles, DataRegion/DataCycles
+    // and (on the ARM9) RegionCodeCycles. Executing an *already* compiled
+    // block leaves all of it alone: the compiled code carries the timings
+    // baked in at compile time and never writes these back. So without
+    // the restore at the end of this function, a block's first run and
+    // its later runs leave the CPU in different states, and emulation
+    // depends on which blocks happen to be compiled — i.e. on execution
+    // history. That is invisible while one instance replays its own
+    // history, and it is exactly what breaks when a savestate crosses
+    // into an instance with a different one.
+    u32 scratchCodeRegion = cpu->CodeRegion;
+    s32 scratchCodeCycles = cpu->CodeCycles;
+    u32 scratchDataRegion = cpu->DataRegion;
+    s32 scratchDataCycles = cpu->DataCycles;
+
+    // Fetch timings have to come from the block's OWN address, not from
+    // wherever the CPU happens to have been. The harvest below records a
+    // CodeCycles per instruction and the code generator bakes those into
+    // the block for good — so inheriting the live region made a block's
+    // cost depend on the path execution first took to reach it, and two
+    // consoles that first compiled it from different predecessors
+    // disagreed about that block forever after. Deriving the region from
+    // blockAddr is both what the CPU would have had on arriving here and
+    // a pure function of the address, which is what makes a compiled
+    // block reproducible.
+    if (cpu->Num == 0)
+    {
+        ARMv5* cpuv5 = (ARMv5*)cpu;
+        cpuv5->SetupCodeMem(blockAddr);
+        cpuv5->RegionCodeCycles = cpuv5->MemTimings[blockAddr >> 12][0];
+    }
+    else
+    {
+        cpu->CodeRegion = blockAddr >> 24;
+        cpu->CodeCycles = blockAddr >> 15; // cheato, as ARMv4::JumpTo has it
+    }
+
     cpu->FillPipeline();
     u32 nextInstr[2] = {cpu->NextInstr[0], cpu->NextInstr[1]};
     u32 nextInstrAddr[2] = {blockAddr, r15};
@@ -824,6 +863,13 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
         // dispatcher's check sees every execution of it.
         && !cpu->IsTrapped(nextInstrAddr[0]));
 
+    // RegionCodeCycles is the exception to the restore below: compiled
+    // code *does* write it at runtime, from the constant Comp_JumpTo
+    // baked in, so the value the interpret-ahead just left is the one
+    // both paths must end on. What has to be undone is only the code
+    // generator's own scribbling over it, further down.
+    s32 interpretedRegionCodeCycles = cpu->Num == 0 ? ((ARMv5*)cpu)->RegionCodeCycles : 0;
+
     if (numLiterals)
     {
         for (u32 j = 0; j < numWriteAddrs; j++)
@@ -935,6 +981,15 @@ void ARMJIT::CompileBlock(ARM* cpu) noexcept
     u64* entry = &FastBlockLookupRegions[(localAddr >> 27)][(localAddr & 0x7FFFFFF) / 2];
     *entry = ((u64)blockAddr | cpu->Num) << 32;
     *entry |= JITCompiler.SubEntryOffset(block->EntryPoint);
+
+    // Hand the CPU back its fetch-timing scratch, so compiling a block
+    // is indistinguishable from having compiled it earlier. See above.
+    cpu->CodeRegion = scratchCodeRegion;
+    cpu->CodeCycles = scratchCodeCycles;
+    cpu->DataRegion = scratchDataRegion;
+    cpu->DataCycles = scratchDataCycles;
+    if (cpu->Num == 0)
+        ((ARMv5*)cpu)->RegionCodeCycles = interpretedRegionCodeCycles;
 }
 
 void ARMJIT::InvalidateByAddr(u32 localAddr) noexcept

@@ -753,22 +753,28 @@ bool NDS::DoSavestate(Savestate* file)
 
     if (!file->Saving)
     {
-        // The mappings and timing tables only need rebuilding if the
-        // loaded state disagrees with the live one — and a rollback
-        // restore virtually always reinstates the configuration the
-        // console is already in. The full rebuild walks multi-megabyte
-        // per-address tables, which dominated whole-console load time.
+        // The WRAM mapping is a pure function of WRAMCnt, so it really
+        // can be skipped when that byte is unchanged.
         if (WRAMCnt != oldWRAMCnt)
             MapSharedWRAM(WRAMCnt);
 
-        if (WRAMCnt != oldWRAMCnt || ExMemCnt[0] != oldExMemCnt[0] || ExMemCnt[1] != oldExMemCnt[1]
-            || WifiWaitCnt != oldWifiWaitCnt)
-        {
-            InitTimings();
-            SetGBASlotTimings();
-
-            UpdateWifiTimings();
-        }
+        // The timing tables cannot. They used to be skipped on the same
+        // "the registers agree, so the tables must agree" reasoning, and
+        // that only holds within one instance: the tables are built up
+        // incrementally — InitTimings, the GBA slot, the wifi wait
+        // states and CP15's region setup all write into them as the game
+        // reconfigures — so a console can hold a table that no longer
+        // follows from its current registers alone. Two instances whose
+        // registers match can therefore still disagree, and with the JIT
+        // on that disagreement is baked into compiled blocks: the ARM7
+        // block dispatched right after the load cost the two of them
+        // different numbers of cycles, and a replay's pairs drifted
+        // apart from there. Rebuilding unconditionally makes the tables
+        // a function of the loaded state, which is what a savestate has
+        // to mean.
+        InitTimings();
+        SetGBASlotTimings();
+        UpdateWifiTimings();
     }
 
     for (int i = 0; i < 8; i++)

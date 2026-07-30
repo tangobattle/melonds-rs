@@ -157,9 +157,10 @@ void ARM::SetGdbArgs(std::optional<GDBArgs> gdb)
 void ARM::Reset()
 {
     Cycles = 0;
-    Halted = 0;
-
-    IRQ = 0;
+    // The whole word at once: Halted, IRQ and IdleLoop share it with a
+    // padding byte, and a savestate carries all four now, so each has to
+    // start from a defined value.
+    StopExecution = 0;
 
     for (int i = 0; i < 16; i++)
         R[i] = 0;
@@ -216,10 +217,15 @@ void ARM::DoSavestate(Savestate* file)
     file->Var32((u32*)&Cycles);
     //file->Var32((u32*)&CyclesToRun);
 
-    // hack to make save states compatible
-    u32 halted = Halted;
-    file->Var32(&halted);
-    Halted = halted;
+    // The whole StopExecution word, not just Halted: it also holds IRQ
+    // (an interrupt the JIT only consumes at a block boundary, so a
+    // frame can end with one standing) and IdleLoop. Carrying Halted
+    // alone left the other two to whatever the *destination* console
+    // happened to hold — invisible under rollback, where a state only
+    // ever returns to the instance that took it, and wrong the moment
+    // one crosses instances. Still a u32 in the same slot, so older
+    // states keep loading; they carry the zero the old hack forced.
+    file->Var32(&StopExecution);
 
     file->VarArray(R, 16*sizeof(u32));
     file->Var32(&CPSR);
@@ -242,6 +248,32 @@ void ARM::DoSavestate(Savestate* file)
 
     file->Var32(&ExceptionBase);
 
+    // The fetch-timing scratch, as of 14.1: which region the last code
+    // and data accesses went to and what they cost. The JIT reads it
+    // while compiling a block and bakes what it reads into that block's
+    // cycle counts, so a console that keeps its own values instead of
+    // the captured ones runs the same code at different cycle counts —
+    // and the divergence shows up on the very first block dispatched
+    // after the load. Invisible under rollback, where a state only ever
+    // returns to the instance that took it; wrong the moment one
+    // crosses instances, which is what a replay's second pair does when
+    // it lands on the first's primed capture. The interpreter
+    // recomputes all of this on every fetch, which is why it only ever
+    // showed with the JIT on.
+    //
+    // Older states carry none of it and fall back to the derivations
+    // below, exactly as they did before.
+    bool timings_carried = file->IsAtLeastVersion(14, 1);
+    if (timings_carried)
+    {
+        file->Var32(&CodeRegion);
+        file->Var32((u32*)&CodeCycles);
+        file->Var32(&DataRegion);
+        file->Var32((u32*)&DataCycles);
+        if (!Num)
+            file->Var32((u32*)&((ARMv5*)this)->RegionCodeCycles);
+    }
+
     if (!file->Saving)
     {
         CPSR |= 0x00000010;
@@ -254,14 +286,15 @@ void ARM::DoSavestate(Savestate* file)
         if (!Num)
         {
             SetupCodeMem(R[15]); // should fix it
-            ((ARMv5*)this)->RegionCodeCycles = ((ARMv5*)this)->MemTimings[R[15] >> 12][0];
+            if (!timings_carried)
+                ((ARMv5*)this)->RegionCodeCycles = ((ARMv5*)this)->MemTimings[R[15] >> 12][0];
 
             if ((CPSR & 0x1F) == 0x10)
                 ((ARMv5*)this)->PU_Map = ((ARMv5*)this)->PU_UserMap;
             else
                 ((ARMv5*)this)->PU_Map = ((ARMv5*)this)->PU_PrivMap;
         }
-        else
+        else if (!timings_carried)
         {
             CodeRegion = R[15] >> 24;
             CodeCycles = R[15] >> 15; // cheato
