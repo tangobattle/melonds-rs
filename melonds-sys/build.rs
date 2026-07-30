@@ -190,8 +190,9 @@ fn build_windows(manifest_dir: &Path, out_dir: &Path, melonds_dir: &Path, jit: b
             .env("PATH", &path_with_ucrt),
     );
 
-    // The shim plus the core, linked into one DLL. libgcc/libstdc++ go
-    // in statically so running it needs nothing from MSYS2 on PATH.
+    // The shim plus the core, linked into one DLL. The whole GNU
+    // runtime goes in statically so running it needs nothing from
+    // MSYS2 on PATH.
     let dll = out_dir.join("melonds_shim.dll");
     let def = out_dir.join("melonds_shim.def");
     run(
@@ -223,7 +224,12 @@ fn build_windows(manifest_dir: &Path, out_dir: &Path, melonds_dir: &Path, jit: b
             // which CMake asks for as MSVC's `onecore`; MinGW ships the
             // same import set as `mincore`.
             .args(["-lws2_32", "-lmincore", "-lbcrypt"])
-            .args(["-static-libgcc", "-static-libstdc++"])
+            // -static-libgcc/-static-libstdc++ alone leave winpthreads
+            // dynamic: the DLL then imports libwinpthread-1.dll — under
+            // newer mingw-w64 by its 64-bit-time_t clock_gettime64
+            // symbol — and fails to load on any machine that doesn't
+            // have a matching MSYS2 on PATH. -static folds it in.
+            .args(["-static", "-static-libgcc", "-static-libstdc++"])
             // MinGW's --out-implib is a GNU-format archive the MSVC
             // linker cannot read, so export a .def instead and let
             // lib.exe turn it into a real import library below.
