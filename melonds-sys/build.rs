@@ -161,6 +161,19 @@ fn build_windows(manifest_dir: &Path, out_dir: &Path, melonds_dir: &Path, jit: b
     // OpenGL, no GDB stub — and the JIT on, which is the whole reason
     // for this toolchain.
     let build_dir = out_dir.join("core-build");
+
+    // Cargo reuses OUT_DIR across revisions of a git dependency, but
+    // each revision checks out under its own path, and CMake refuses a
+    // cache whose source directory moved. A cache pointing at some
+    // other checkout is stale by definition — start over. (The cmake
+    // crate does the same for the Unix path.)
+    if let Ok(cache) = std::fs::read_to_string(build_dir.join("CMakeCache.txt")) {
+        let ours = format!("CMAKE_HOME_DIRECTORY:INTERNAL={}", cmake_path(melonds_dir));
+        if !cache.lines().any(|line| line == ours) {
+            std::fs::remove_dir_all(&build_dir).expect("failed to clear stale core-build");
+        }
+    }
+
     run(
         "cmake configure",
         Command::new(&cmake)
