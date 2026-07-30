@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <inttypes.h>
+#include <atomic>
 #include "NDS.h"
 #include "ARM.h"
 #include "NDSCart.h"
@@ -94,7 +95,14 @@ NDS::NDS() noexcept :
 {
 }
 
+// Distinct per instance, and only ever compared for equality: a load
+// uses it to tell a state this console took itself from one taken by
+// another console. Process-local, which is all it has to be — nothing
+// here keeps savestates past the run that made them.
+static std::atomic<u64> NextInstanceCookie {1};
+
 NDS::NDS(NDSArgs&& args, int type, void* userdata) noexcept :
+    InstanceCookie(NextInstanceCookie.fetch_add(1)),
     ConsoleType(type),
     UserData(userdata),
     ARM7BIOS(*args.ARM7BIOS),
@@ -751,6 +759,15 @@ bool NDS::DoSavestate(Savestate* file)
 
     file->Bool32(&RunningGame);
 
+    // Whose state this is. Written, never loaded: the field keeps
+    // naming *this* console, and what the stored value answers is
+    // whether the state in hand came from here.
+    u64 producer = InstanceCookie;
+    if (file->IsAtLeastVersion(14, 1))
+        file->Var64(&producer);
+    bool foreign = producer != InstanceCookie;
+    LoadingForeignState = !file->Saving && foreign;
+
     if (!file->Saving)
     {
         // The WRAM mapping is a pure function of WRAMCnt, so it really
@@ -758,23 +775,28 @@ bool NDS::DoSavestate(Savestate* file)
         if (WRAMCnt != oldWRAMCnt)
             MapSharedWRAM(WRAMCnt);
 
-        // The timing tables cannot. They used to be skipped on the same
-        // "the registers agree, so the tables must agree" reasoning, and
-        // that only holds within one instance: the tables are built up
-        // incrementally — InitTimings, the GBA slot, the wifi wait
-        // states and CP15's region setup all write into them as the game
-        // reconfigures — so a console can hold a table that no longer
-        // follows from its current registers alone. Two instances whose
-        // registers match can therefore still disagree, and with the JIT
-        // on that disagreement is baked into compiled blocks: the ARM7
-        // block dispatched right after the load cost the two of them
-        // different numbers of cycles, and a replay's pairs drifted
-        // apart from there. Rebuilding unconditionally makes the tables
-        // a function of the loaded state, which is what a savestate has
-        // to mean.
-        InitTimings();
-        SetGBASlotTimings();
-        UpdateWifiTimings();
+        // The timing tables cannot be skipped on those registers alone.
+        // They are built up incrementally — InitTimings, the GBA slot,
+        // the wifi wait states and CP15's region setup all write into
+        // them as the game reconfigures — so a console can hold a table
+        // that no longer follows from its current registers. Within one
+        // instance that is harmless, because the table and the state
+        // came out of the same history; across instances it is not, and
+        // with the JIT on the disagreement gets baked into compiled
+        // blocks (the ARM7 block dispatched right after such a load cost
+        // the two consoles 375 cycles and 371, and a replay's pairs
+        // drifted apart from there).
+        //
+        // So a foreign state pays for the rebuild and a rollback does
+        // not — which matters, because the rebuild walks multi-megabyte
+        // per-address tables and rollback restores on every mispredict.
+        if (foreign || WRAMCnt != oldWRAMCnt || ExMemCnt[0] != oldExMemCnt[0]
+            || ExMemCnt[1] != oldExMemCnt[1] || WifiWaitCnt != oldWifiWaitCnt)
+        {
+            InitTimings();
+            SetGBASlotTimings();
+            UpdateWifiTimings();
+        }
     }
 
     for (int i = 0; i < 8; i++)

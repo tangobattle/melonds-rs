@@ -260,6 +260,16 @@ public: // TODO: Encapsulate the rest of these members
     void* UserData;
 
     int ConsoleType;
+    // Which instance this is, for telling a savestate that came from
+    // *here* from one that came from somewhere else. Never loaded from
+    // a state — see NDS::DoSavestate.
+    u64 InstanceCookie;
+
+    // Set while loading a state this console did not take, so the
+    // derived tables further down the load — CP15's included — know to
+    // rebuild rather than trust what they are holding.
+    bool LoadingForeignState = false;
+
     int CurCPU;
 
     SchedEvent SchedList[Event_MAX] {};

@@ -110,7 +110,13 @@ void ARMv5::CP15DoSavestate(Savestate* file)
         // are these registers (bus-side timing changes propagate through
         // SetARM9RegionTimings on their own), so an unchanged set means
         // an unchanged result.
-        bool same = oldControl == CP15Control && oldDTCM == DTCMSetting && oldITCM == ITCMSetting
+        // Same reasoning as the timing tables in NDS::DoSavestate: an
+        // unchanged register set means an unchanged result only for a
+        // state this console took itself. A foreign one rebuilds — and
+        // has to, since NDS::DoSavestate has just rebuilt the timings
+        // these regions overlay.
+        bool same = !NDS.LoadingForeignState
+            && oldControl == CP15Control && oldDTCM == DTCMSetting && oldITCM == ITCMSetting
             && oldCodeCache == PU_CodeCacheable && oldDataCache == PU_DataCacheable
             && oldDataWrite == PU_DataCacheWrite && oldCodeRW == PU_CodeRW && oldDataRW == PU_DataRW
             && !memcmp(oldRegion, PU_Region, sizeof(oldRegion));
