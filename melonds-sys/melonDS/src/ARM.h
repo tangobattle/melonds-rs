@@ -153,12 +153,17 @@ public:
     // Cheap enough for the interpreter's inner loop: one bit test
     // against a filter keyed on the address. A filter collision costs
     // only a spurious callback, which the host drops by exact address.
+    bool IsTrapped(u32 addr) const
+    {
+        if (!TrapHandler) return false;
+        u32 i = (addr >> 1) & 0xffff;
+        return TrapFilter[i >> 3] & (1 << (i & 7));
+    }
+
     void CheckTrap(u32 addr)
     {
-        if (!TrapHandler) return;
-        u32 i = (addr >> 1) & 0xffff;
-        if (!(TrapFilter[i >> 3] & (1 << (i & 7)))) return;
-        TrapHandler(TrapUserdata, addr);
+        if (IsTrapped(addr))
+            TrapHandler(TrapUserdata, addr);
     }
 
 

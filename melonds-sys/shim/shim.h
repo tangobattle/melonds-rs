@@ -135,8 +135,8 @@ void mds_set_traps(MdsNds* nds, const uint32_t* addrs, uint32_t count, MdsTrapFn
 // The ARM7 mirror of the mds_arm9_* surface, same contracts throughout.
 // The platform code the game leans on — sound, wireless, the cartridge
 // backup server — runs on this processor, so a walk that must answer
-// those waits needs traps here too. Trap counts are per-CPU but the JIT
-// gate is shared: the JIT stands down while either CPU has traps.
+// those waits needs traps here too. Traps on either CPU run under the
+// JIT: trapped addresses become block boundaries, checked at dispatch.
 uint32_t mds_arm7_read32(MdsNds* nds, uint32_t addr);
 uint16_t mds_arm7_read16(MdsNds* nds, uint32_t addr);
 uint8_t mds_arm7_read8(MdsNds* nds, uint32_t addr);

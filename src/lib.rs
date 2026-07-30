@@ -356,10 +356,12 @@ impl Nds {
     /// caller walks the game through its own code instead of pressing
     /// its buttons.
     ///
-    /// Traps run the ARM9 interpreted — the JIT would run straight past
-    /// them — so this is a tool for short scripted stretches like
-    /// priming, not for a whole match. Passing an empty list removes
-    /// them and hands the ARM9 back to the JIT.
+    /// Traps run under the JIT: a trapped address always starts its own
+    /// compiled block, and the dispatcher runs the handler just before
+    /// that block — the same "just before the instruction" the
+    /// interpreter delivers, at full JIT speed for everything between.
+    /// Changing the trap set re-forms the block cache, so installs are
+    /// for scripted stretches, not per-frame toggling.
     ///
     /// Traps are host state: they are not written to savestates, so a
     /// [`load_state`](Self::load_state) keeps whatever is installed now.
@@ -388,8 +390,8 @@ impl Nds {
     /// to answer one of those waits needs its feet on this side too.
     ///
     /// Same contracts throughout: handlers may read and write memory and
-    /// may [`arm7_jump`](Self::arm7_jump); either CPU having traps holds
-    /// the whole console on the interpreter.
+    /// may [`arm7_jump`](Self::arm7_jump); this CPU's trapped addresses
+    /// become its own block boundaries, exactly as the ARM9's do.
     pub fn set_traps7(&mut self, traps: Vec<(u32, Box<dyn FnMut(&mut Nds)>)>) {
         let addrs: Vec<u32> = traps.iter().map(|(addr, _)| *addr).collect();
         let table = Box::new(TrapTable {

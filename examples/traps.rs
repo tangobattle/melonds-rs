@@ -7,6 +7,9 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+struct Offline;
+impl melonds::Host for Offline {}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let rom = std::fs::read(args.next().expect("usage: traps <rom> [save]")).unwrap();
@@ -21,7 +24,7 @@ fn main() {
     // Found with the traps themselves rather than by reading the pc
     // between frames: between frames the ARM9 is reliably parked in the
     // BIOS, so sampling there only ever turns up ARM code.
-    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, 0).unwrap();
+    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, Box::new(Offline)).unwrap();
     nds.boot();
     // The busiest one, so that what follows is exercised properly
     // rather than proven on a single firing.
@@ -56,7 +59,7 @@ fn main() {
 
     // Run again to the same point and trap it.
     let hits = Arc::new(Mutex::new(Vec::<u32>::new()));
-    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, 0).unwrap();
+    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, Box::new(Offline)).unwrap();
     nds.boot();
     {
         let hits = hits.clone();
@@ -100,7 +103,7 @@ fn main() {
     drop(nds);
 
     let jumps = Arc::new(Mutex::new(0usize));
-    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, 0).unwrap();
+    let mut nds = melonds::Nds::new(&rom, save.as_deref(), 0, Box::new(Offline)).unwrap();
     nds.boot();
     {
         let jumps = jumps.clone();

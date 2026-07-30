@@ -57,24 +57,18 @@ struct MdsNds
 {
     std::unique_ptr<NDS> nds;
     void* userdata;
-    // How many traps each CPU has installed. The JIT is one switch for
-    // the whole console, so it stands down while either CPU is trapped.
-    uint32_t trap_count9 = 0;
-    uint32_t trap_count7 = 0;
 };
 
-// The JIT has to stand down while any traps are installed — a compiled
-// block runs straight past them. Turning it off resets the block cache,
-// and turning it back on starts a fresh one, so no block outlives the
-// switch and the two modes never disagree about what is compiled.
-//
-// This is why traps are a priming tool: priming runs interpreted and is
-// short, and clearing the traps hands the match back to the JIT.
+// Traps run under the JIT: a trapped address always starts its own
+// block (CompileBlock cuts blocks in front of one) and the dispatch
+// loop runs its handler just before that block, which is the same
+// "just before the instruction" the interpreter delivers. What a new
+// trap set changes is where those boundaries fall, so installing or
+// clearing traps re-forms the block cache.
 static void mds_apply_jit_gate(MdsNds* w)
 {
 #ifdef JIT_ENABLED
-    bool trapped = w->trap_count9 || w->trap_count7;
-    w->nds->SetJITArgs(trapped ? std::nullopt : std::optional<JITArgs>(JITArgs()));
+    w->nds->JIT.ResetBlockCache();
 #endif
 }
 
@@ -236,7 +230,6 @@ void mds_arm9_jump(MdsNds* w, uint32_t addr)
 void mds_set_traps(MdsNds* w, const uint32_t* addrs, uint32_t count, MdsTrapFn fn, void* userdata)
 {
     w->nds->ARM9.SetTraps(addrs, count, reinterpret_cast<melonDS::ARM::TrapFn>(fn), userdata);
-    w->trap_count9 = count;
     mds_apply_jit_gate(w);
 }
 
@@ -282,7 +275,6 @@ void mds_arm7_jump(MdsNds* w, uint32_t addr)
 void mds_set_traps7(MdsNds* w, const uint32_t* addrs, uint32_t count, MdsTrapFn fn, void* userdata)
 {
     w->nds->ARM7.SetTraps(addrs, count, reinterpret_cast<melonDS::ARM::TrapFn>(fn), userdata);
-    w->trap_count7 = count;
     mds_apply_jit_gate(w);
 }
 

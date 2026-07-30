@@ -635,6 +635,19 @@ void ARMv5::Execute()
         {
             u32 instrAddr = R[15] - ((CPSR&0x20)?2:4);
 
+            // Host traps fire at block granularity: CompileBlock cuts
+            // blocks so a trapped address only ever starts one, and the
+            // check here runs the handler before that block — the same
+            // "just before the instruction" the interpreter delivers. A
+            // redirecting handler moves R[15]; restarting the loop then
+            // dispatches (and trap-checks) the target instead.
+            if (TrapHandler) [[unlikely]]
+            {
+                CheckTrap(instrAddr);
+                if (R[15] - ((CPSR&0x20)?2:4) != instrAddr)
+                    continue;
+            }
+
             if ((instrAddr < FastBlockLookupStart || instrAddr >= (FastBlockLookupStart + FastBlockLookupSize))
                 && !NDS.JIT.SetupExecutableRegion(0, instrAddr, FastBlockLookup, FastBlockLookupStart, FastBlockLookupSize))
             {
@@ -780,6 +793,19 @@ void ARMv4::Execute()
         if constexpr (mode == CPUExecuteMode::JIT)
         {
             u32 instrAddr = R[15] - ((CPSR&0x20)?2:4);
+
+            // Host traps fire at block granularity: CompileBlock cuts
+            // blocks so a trapped address only ever starts one, and the
+            // check here runs the handler before that block — the same
+            // "just before the instruction" the interpreter delivers. A
+            // redirecting handler moves R[15]; restarting the loop then
+            // dispatches (and trap-checks) the target instead.
+            if (TrapHandler) [[unlikely]]
+            {
+                CheckTrap(instrAddr);
+                if (R[15] - ((CPSR&0x20)?2:4) != instrAddr)
+                    continue;
+            }
 
             if ((instrAddr < FastBlockLookupStart || instrAddr >= (FastBlockLookupStart + FastBlockLookupSize))
                 && !NDS.JIT.SetupExecutableRegion(1, instrAddr, FastBlockLookup, FastBlockLookupStart, FastBlockLookupSize))
