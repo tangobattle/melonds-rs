@@ -276,9 +276,9 @@ private:
     s16* OutputBuffer;
     u32 OutputBufferWritePos = 0;
     u32 OutputBufferReadPos = 0;
-    s16 OutputLastSamples[2];
+    s16 OutputLastSamples[2] {};
 
-    u32 MixInterval;
+    u32 MixInterval = 0;
 
     Platform::Mutex* AudioLock;
 

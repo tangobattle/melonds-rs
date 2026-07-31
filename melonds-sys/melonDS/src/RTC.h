@@ -67,21 +67,21 @@ public:
 
 private:
     melonDS::NDS& NDS;
-    u16 IO;
+    u16 IO = 0;
 
     u8 Input;
     u32 InputBit;
     u32 InputPos;
 
     u8 Output[8];
-    u32 OutputBit;
+    u32 OutputBit = 0;
     u32 OutputPos;
 
     u8 CurCmd;
 
     StateData State;
 
-    s32 TimerError;
+    s32 TimerError = 0;
     u32 ClockCount;
 
     void ResetState();

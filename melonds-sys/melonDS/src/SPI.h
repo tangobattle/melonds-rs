@@ -59,7 +59,7 @@ protected:
     melonDS::NDS& NDS;
 
     bool Hold;
-    u32 DataPos;
+    u32 DataPos = 0;
     u8 Data;
 };
 
@@ -87,7 +87,7 @@ private:
     u8 CurCmd;
 
     u8 StatusReg;
-    u32 Addr;
+    u32 Addr = 0;
 
     bool VerifyCRC16(u32 start, u32 offset, u32 len, u32 crcoffset) const;
 };

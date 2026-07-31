@@ -62,7 +62,7 @@ private:
     int PacketLen;
     int RXNum;
 
-    u8 LANBuffer[2048];
+    u8 LANBuffer[2048] {};
 
     // this is a lazy AP, we only keep track of one client
     // 0=disconnected 1=authenticated 2=associated

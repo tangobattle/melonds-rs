@@ -197,11 +197,11 @@ public:
         u32 StopExecution;
     };
 
-    u32 CodeRegion;
-    s32 CodeCycles;
+    u32 CodeRegion = 0;
+    s32 CodeCycles = 0;
 
-    u32 DataRegion;
-    s32 DataCycles;
+    u32 DataRegion = 0;
+    s32 DataCycles = 0;
 
     u32 R[16]; // heh
     u32 CPSR;
@@ -210,7 +210,7 @@ public:
     u32 R_ABT[3];
     u32 R_IRQ[3];
     u32 R_UND[3];
-    u32 CurInstr;
+    u32 CurInstr = 0;
     u32 NextInstr[2];
 
     u32 ExceptionBase;

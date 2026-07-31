@@ -199,7 +199,7 @@ private:
     bool Enabled;
     bool PowerOn;
 
-    s32 TimerError;
+    s32 TimerError = 0;
 
     u16 Random;
 

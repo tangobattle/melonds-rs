@@ -279,8 +279,8 @@ public: // TODO: Encapsulate the rest of these members
     u32 ARM7Regions[0x20000];
 
     u32 NumFrames;
-    u32 NumLagFrames;
-    bool LagFrameFlag;
+    u32 NumLagFrames = 0;
+    bool LagFrameFlag = false;
 
     // no need to worry about those overflowing, they can keep going for atleast 4350 years
     u64 ARM9Timestamp, ARM9Target;
@@ -519,7 +519,7 @@ protected:
     void InitTimings();
     u32 SchedListMask;
     u64 SysTimestamp;
-    u8 WRAMCnt;
+    u8 WRAMCnt = 0;
     u8 PostFlag9;
     u8 PostFlag7;
     u16 PowerControl7;
@@ -544,7 +544,7 @@ protected:
     bool Running;
     bool RunningGame;
     u64 LastSysClockCycles;
-    u64 FrameStartTimestamp;
+    u64 FrameStartTimestamp = 0;
     u64 NextTarget();
     u64 NextTargetSleep();
     void CheckKeyIRQ(u32 cpu, u32 oldkey, u32 newkey);

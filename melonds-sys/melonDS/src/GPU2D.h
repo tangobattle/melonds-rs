@@ -104,7 +104,7 @@ public:
     u32 OBJMosaicLine;
 
     u16 BlendCnt;
-    u16 BlendAlpha;
+    u16 BlendAlpha = 0;
     u8 EVA, EVB;
     u8 EVY;
 
