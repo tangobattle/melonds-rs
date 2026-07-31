@@ -566,6 +566,13 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
 
     file->VarArray(LightDirection, sizeof(s16)*4*3);
     file->VarArray(LightColor, sizeof(u8)*4*3);
+    // The specular reciprocal comes off the same LIGHT_VECTOR command
+    // as the direction beside it and lasts just as long — until the
+    // next one for that light. Saving one and not the other left a
+    // restored console lighting its vertices from a run that had been
+    // taken back.
+    if (file->IsAtLeastVersion(14, 2))
+        file->VarArray(SpecRecip, sizeof(SpecRecip));
     file->VarArray(MatDiffuse, sizeof(u8)*3);
     file->VarArray(MatAmbient, sizeof(u8)*3);
     file->VarArray(MatSpecular, sizeof(u8)*3);

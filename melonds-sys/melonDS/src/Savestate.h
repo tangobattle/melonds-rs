@@ -26,7 +26,8 @@
 
 #define SAVESTATE_MAJOR 14
 // 14.1 carries the CPUs' fetch-timing scratch — see ARM::DoSavestate.
-#define SAVESTATE_MINOR 1
+// 14.2 carries the divider and square-root registers — see NDS::DoSavestate.
+#define SAVESTATE_MINOR 2
 
 // bitmask for the savestate config word
 enum

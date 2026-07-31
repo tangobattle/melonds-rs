@@ -715,6 +715,28 @@ bool NDS::DoSavestate(Savestate* file)
     file->Var16(&DivCnt);
     file->Var16(&SqrtCnt);
 
+    // The divider and the square-root unit are registers the game reads
+    // back, not scratch. Operands and results sit in them until
+    // something overwrites them, so a result computed in one frame is
+    // routinely read in a later one, and the two control words alone
+    // say no more than whether a unit is busy.
+    //
+    // Left out, a restored console answered such a read with whatever
+    // the run it had just taken back left in the unit — a rollback
+    // desync, and an intermittent one, since it only bites on the ticks
+    // where the game reads a result from before the snapshot. Older
+    // states carry none of this and leave the units as they stand,
+    // exactly as they did before.
+    if (file->IsAtLeastVersion(14, 2))
+    {
+        file->VarArray(DivNumerator, sizeof(DivNumerator));
+        file->VarArray(DivDenominator, sizeof(DivDenominator));
+        file->VarArray(DivQuotient, sizeof(DivQuotient));
+        file->VarArray(DivRemainder, sizeof(DivRemainder));
+        file->VarArray(SqrtVal, sizeof(SqrtVal));
+        file->Var32(&SqrtRes);
+    }
+
     file->Var32(&CPUStop);
 
     for (int i = 0; i < 8; i++)
