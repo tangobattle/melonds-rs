@@ -52,6 +52,12 @@ fn main() {
     let jit = jit_supported && std::env::var("MELONDS_JIT").map(|v| v == "1").unwrap_or(false);
     println!("cargo:rerun-if-env-changed=MELONDS_JIT");
 
+    let wasm = target_arch == "wasm32";
+    if wasm {
+        build_wasm(&manifest_dir, &melonds_dir, &out_dir);
+        return;
+    }
+
     // The compiler that builds the core also builds the shim: they share
     // NDS.h, and an ABI split across that header is not a link error but
     // a silent layout disagreement.
@@ -88,6 +94,171 @@ fn main() {
     println!("cargo:rerun-if-changed=shim/shim.cpp");
     println!("cargo:rerun-if-changed=shim/shim.h");
     println!("cargo:rerun-if-changed=melonDS/src");
+}
+
+// ---------------------------------------------------------------------
+// wasm32.
+
+/// The whole build for a browser: core, teakra and shim compiled by
+/// wasi-sdk, then bindgen run against wasi-libc's headers.
+///
+/// **The C++ is compiled for `wasm32-wasip1-threads`, not plain
+/// `wasm32-wasip1`.** teakra — melonDS's DSP, which the core links
+/// whether or not a DS-mode game ever wakes it — takes `find_package
+/// (Threads REQUIRED)` and uses `std::mutex`, and libc++ without threads
+/// has no such type. The threaded sysroot also happens to be what a
+/// linked pair needs anyway: two consoles have to run concurrently and
+/// block on each other through the air, because a melonDS frame cannot
+/// be suspended half way the way an mgba core can be parked between
+/// timing slices.
+///
+/// That choice reaches the whole module. A threaded wasm build wants
+/// shared memory and the atomics feature, so the Rust half has to be
+/// built to match (`-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals`
+/// over a `-Zbuild-std` std), and a page that instantiates it has to be
+/// served cross-origin-isolated. None of that is this file's business,
+/// but a link failure about mismatched memory is where it shows up.
+fn build_wasm(manifest_dir: &Path, melonds_dir: &Path, out_dir: &Path) {
+    let sdk = wasi_sdk();
+    let sysroot = sdk.join("share").join("wasi-sysroot");
+    let build_dir = out_dir.join("core-build");
+
+    // Same reasoning as the Windows path: a cache whose source directory
+    // moved (a new checkout of this git dependency) is stale, and CMake
+    // treats that as an error rather than a reconfigure.
+    if let Ok(cache) = std::fs::read_to_string(build_dir.join("CMakeCache.txt")) {
+        let home = cache.lines().find_map(|line| {
+            let (name, value) = line.split_once('=')?;
+            let name = name.split_once(':').map_or(name, |(name, _)| name);
+            (name == "CMAKE_HOME_DIRECTORY").then_some(value)
+        });
+        if home != Some(cmake_path(melonds_dir).as_str()) {
+            std::fs::remove_dir_all(&build_dir).expect("failed to clear stale core-build");
+        }
+    }
+
+    run(
+        "cmake configure",
+        Command::new("cmake")
+            .arg("-S")
+            .arg(melonds_dir)
+            .arg("-B")
+            .arg(&build_dir)
+            .arg("-G")
+            .arg("Ninja")
+            .arg(format!(
+                "-DCMAKE_TOOLCHAIN_FILE={}",
+                cmake_path(&sdk.join("share").join("cmake").join("wasi-sdk-pthread.cmake"))
+            ))
+            .arg("-DCMAKE_BUILD_TYPE=Release")
+            .arg("-DBUILD_QT_SDL=OFF")
+            .arg("-DENABLE_OGLRENDERER=OFF")
+            .arg("-DENABLE_GDBSTUB=OFF")
+            // There is no wasm dynarec, and the interpreter is what
+            // every other target runs anyway.
+            .arg("-DENABLE_JIT=OFF")
+            .arg("-DENABLE_LTO=OFF")
+            .arg("-DENABLE_LTO_RELEASE=OFF"),
+    );
+    run(
+        "cmake build",
+        Command::new("cmake").arg("--build").arg(&build_dir).arg("--target").arg("core"),
+    );
+
+    // The shim shares NDS.h with the core, so it is built by the same
+    // compiler with the same target — an ABI split across that header is
+    // a silent layout disagreement, not a link error.
+    cc::Build::new()
+        .cpp(true)
+        .compiler(sdk.join("bin").join("clang++"))
+        .archiver(sdk.join("bin").join("llvm-ar"))
+        .target("wasm32-wasip1-threads")
+        .std("c++20")
+        // cc translates the triple it was given into `wasm32-wasi`,
+        // which is the threadless one — `-pthread` then buys nothing and
+        // libc++ comes up without `std::this_thread`. Its own flag lands
+        // first, and clang takes the last `--target`, so saying it again
+        // here is what actually selects the sysroot the core was built
+        // against.
+        .flag("--target=wasm32-wasip1-threads")
+        .flag(format!("--sysroot={}", sysroot.display()))
+        .flag("-pthread")
+        // PUBLIC on CMake's `core` target, so it has to be repeated for
+        // anything that shares the headers.
+        .flag("-fwrapv")
+        .file(manifest_dir.join("shim/shim.cpp"))
+        .include(melonds_dir.join("src"))
+        .include(manifest_dir.join("shim"))
+        .compile("melonds_shim");
+
+    println!("cargo:rustc-link-search=native={}", build_dir.join("src").display());
+    println!("cargo:rustc-link-search=native={}", build_dir.join("src/teakra/src").display());
+    println!("cargo:rustc-link-lib=static=core");
+    println!("cargo:rustc-link-lib=static=teakra");
+    // wasi-libc and the C++ runtime, which rustc does not bring for a
+    // target whose Rust half has no libc of its own.
+    println!(
+        "cargo:rustc-link-search=native={}",
+        sysroot.join("lib").join("wasm32-wasip1-threads").display()
+    );
+    for lib in ["c", "c++", "c++abi"] {
+        println!("cargo:rustc-link-lib=static={lib}");
+    }
+    // The i64/i128/float helpers the C++ objects call and Rust's own
+    // compiler-builtins may not export.
+    if let Some(dir) = wasm32_builtins_dir(&sdk) {
+        println!("cargo:rustc-link-search=native={}", dir.display());
+        println!("cargo:rustc-link-lib=static=clang_rt.builtins-wasm32");
+    }
+
+    bindgen::Builder::default()
+        .header(manifest_dir.join("shim").join("shim.h").to_str().unwrap().to_owned())
+        .allowlist_item("Mds.*|mds_.*")
+        // Parse the header exactly as the wasi compile saw it: ILP32
+        // layouts and wasi-libc's headers, not the host's. Needs a
+        // wasm-aware libclang (LIBCLANG_PATH).
+        .clang_args([
+            "--target=wasm32-wasip1-threads".to_string(),
+            format!("--sysroot={}", sysroot.display()),
+            // clang defaults wasm symbols to hidden, and bindgen drops
+            // every function it considers non-linkable.
+            "-fvisibility=default".to_string(),
+        ])
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .generate()
+        .expect("failed to generate bindings")
+        .write_to_file(out_dir.join("bindings.rs"))
+        .expect("failed to write bindings");
+
+    println!("cargo:rerun-if-changed=shim/shim.cpp");
+    println!("cargo:rerun-if-changed=shim/shim.h");
+    println!("cargo:rerun-if-changed=melonDS/src");
+    println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
+}
+
+/// The wasi-sdk root, from `WASI_SDK_PATH`.
+fn wasi_sdk() -> PathBuf {
+    println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
+    PathBuf::from(
+        std::env::var("WASI_SDK_PATH")
+            .expect("set WASI_SDK_PATH to a wasi-sdk root to build melonDS for wasm32"),
+    )
+}
+
+/// wasi-sdk's compiler-rt builtins archive for wasm32. The layout moved
+/// across sdk releases, so this globs rather than pinning a clang
+/// version.
+fn wasm32_builtins_dir(sdk: &Path) -> Option<PathBuf> {
+    for version in std::fs::read_dir(sdk.join("lib").join("clang")).ok()? {
+        let lib = version.ok()?.path().join("lib");
+        for flavor in std::fs::read_dir(lib).ok()? {
+            let dir = flavor.ok()?.path();
+            if dir.join("libclang_rt.builtins-wasm32.a").exists() {
+                return Some(dir);
+            }
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------
