@@ -4,15 +4,16 @@
 //! archives that rustc links straight into the binary, so nothing has to
 //! be placed beside the executable at runtime.
 //!
-//! Windows needs one thing arranged for it. The JIT is GCC/Clang code —
-//! a GAS-syntax linkage stub, `__asm__("cpuid")`, variable-length
-//! arrays, `__attribute__((packed))` — which `cl.exe` rejects outright,
-//! and two interpreted ARM cores per console cannot hold 60 fps for a
-//! link, so the JIT is not optional here. The answer is not a different
-//! ABI but a different compiler on the same one: **clang driving the
-//! MSVC target**, which accepts all of the above (its integrated
-//! assembler handles the `.S`) and emits MSVC-ABI COFF with the MSVC STL
-//! and SEH unwind. `link.exe` reads those archives natively.
+//! Windows needs one thing arranged for it: the core is built by
+//! **clang driving the MSVC target**, not `cl.exe`. melonDS is GCC/Clang
+//! code in places `cl.exe` rejects outright — variable-length arrays,
+//! `__attribute__((packed))`, and (with the JIT built in) a GAS-syntax
+//! linkage stub and `__asm__("cpuid")`. Clang on the MSVC target accepts
+//! all of it, its integrated assembler handles the `.S`, and it emits
+//! MSVC-ABI COFF with the MSVC STL and SEH unwind, which `link.exe`
+//! reads natively. The JIT is off by default (see `main`), but the
+//! compiler choice is not conditional on that: the same toolchain has to
+//! build both configurations.
 //!
 //! Note clang, not clang-cl: CMake sets `MSVC` for clang-cl, and
 //! melonDS's `if (NOT MSVC)` block is what applies `-fwrapv` — PUBLIC on
@@ -30,11 +31,15 @@ fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap();
 
-    // The JIT is on: interpreting four ARM cores cannot hold 60 fps for
-    // a link, and with the block-cache flush removed from the savestate
-    // load path (see the vendored NDS.cpp) a link still replays
-    // bit-identically across a restore. MELONDS_JIT=0 falls back to the
-    // interpreter.
+    // The JIT is off. It is faster — interpreting four ARM cores is a
+    // large multiple of the work — but its compiled blocks are a second
+    // copy of the console's timing behaviour that everything else here
+    // has to keep coherent: savestates have to carry it, rollback has to
+    // restore it, and a trap or watch set has to re-form it. Every one
+    // of those seams has produced a divergence, and each cost a protocol
+    // version to fix. The interpreter has no such state, so a console is
+    // a function of its inputs and nothing else. MELONDS_JIT=1 opts back
+    // in, for profiling the difference.
     //
     // The support matrix mirrors melonDS's own CMake: x86_64/aarch64
     // only, and force-off on x86_64 macOS. Its cmake_dependent_option
@@ -44,7 +49,7 @@ fn main() {
     // explicitly.
     let jit_supported = matches!(target_arch.as_str(), "x86_64" | "aarch64")
         && !(target_os == "macos" && target_arch == "x86_64");
-    let jit = jit_supported && std::env::var("MELONDS_JIT").map(|v| v != "0").unwrap_or(true);
+    let jit = jit_supported && std::env::var("MELONDS_JIT").map(|v| v == "1").unwrap_or(false);
     println!("cargo:rerun-if-env-changed=MELONDS_JIT");
 
     // The compiler that builds the core also builds the shim: they share
