@@ -338,6 +338,19 @@ void ARM::SetTraps(const u32* addrs, u32 count, TrapFn fn, void* userdata)
     TrapHandler = count ? fn : nullptr;
 }
 
+void ARM::SetWatches(const u32* addrs, u32 count, WatchFn fn, void* userdata)
+{
+    memset(WatchFilter, 0, sizeof(WatchFilter));
+    for (u32 i = 0; i < count; i++)
+    {
+        u32 bit = (addrs[i] >> 1) & 0xffff;
+        WatchFilter[bit >> 3] |= 1 << (bit & 7);
+    }
+    // Armed last, for the reason SetTraps arms last.
+    WatchUserdata = userdata;
+    WatchHandler = count ? fn : nullptr;
+}
+
 void ARMv5::JumpTo(u32 addr, bool restorecpsr)
 {
     if (restorecpsr)
@@ -1207,6 +1220,8 @@ u32 ARMv5::ReadMem(u32 addr, int size)
 
 void ARMv4::DataRead8(u32 addr, u32* val)
 {
+    CheckWatch(addr);
+
     *val = BusRead8(addr);
     DataRegion = addr;
     DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
@@ -1215,6 +1230,8 @@ void ARMv4::DataRead8(u32 addr, u32* val)
 void ARMv4::DataRead16(u32 addr, u32* val)
 {
     addr &= ~1;
+
+    CheckWatch(addr);
 
     *val = BusRead16(addr);
     DataRegion = addr;
@@ -1225,6 +1242,8 @@ void ARMv4::DataRead32(u32 addr, u32* val)
 {
     addr &= ~3;
 
+    CheckWatch(addr);
+
     *val = BusRead32(addr);
     DataRegion = addr;
     DataCycles = NDS.ARM7MemTimings[addr >> 15][2];
@@ -1233,6 +1252,8 @@ void ARMv4::DataRead32(u32 addr, u32* val)
 void ARMv4::DataRead32S(u32 addr, u32* val)
 {
     addr &= ~3;
+
+    CheckWatch(addr);
 
     *val = BusRead32(addr);
     DataCycles += NDS.ARM7MemTimings[addr >> 15][3];

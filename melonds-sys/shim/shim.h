@@ -150,6 +150,31 @@ int mds_arm7_thumb(MdsNds* nds);
 void mds_arm7_jump(MdsNds* nds, uint32_t addr);
 void mds_set_traps7(MdsNds* nds, const uint32_t* addrs, uint32_t count, MdsTrapFn fn, void* userdata);
 
+// Fire `fn` when either processor READS any of `count` data addresses —
+// the question a trap cannot answer. A trap finds code by its address;
+// a watch finds it by what it touches, which is the only way left when
+// a variable is read without anything branching on it (nothing for a
+// coverage diff to see) through a computed address (nothing for a
+// search of the binary to find).
+//
+// The handler fires from inside the load, before the value reaches its
+// register, so mds_armX_pc names the reading instruction and the
+// registers are that instruction's. Observation only — do NOT jump from
+// a watch handler, the interrupted load still has to complete. Address
+// filtering is the same deal as the traps': cheap and approximate in
+// the core, exact on the host. Byte reads report their own address;
+// wider ones report the aligned address the load goes to, so watch the
+// word a field sits in, not just the field.
+//
+// Arming a watch takes the console OFF THE JIT for as long as any watch
+// is installed, because compiled code reads memory without asking. That
+// costs a large multiple of the emulator's speed and shifts emulated
+// timing, so this is an instrument for scouting a single run, never
+// something to leave in a session.
+typedef void (*MdsWatchFn)(void* userdata, uint32_t addr);
+void mds_set_watches(MdsNds* nds, const uint32_t* addrs, uint32_t count, MdsWatchFn fn, void* userdata);
+void mds_set_watches7(MdsNds* nds, const uint32_t* addrs, uint32_t count, MdsWatchFn fn, void* userdata);
+
 // Emulated system-clock cycle count (33.513982 MHz domain) — the
 // lockstep coordinator's notion of instance progress.
 uint64_t mds_sys_timestamp(MdsNds* nds);

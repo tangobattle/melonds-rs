@@ -166,6 +166,44 @@ public:
             TrapHandler(TrapUserdata, addr);
     }
 
+    // Host data-read watches: the other half of the question a trap
+    // answers. A trap says the CPU reached this code; a watch says some
+    // code read this address — which is what finds the reader of a
+    // variable when nothing branches on it, so no coverage diff sees it,
+    // and the access is computed, so no search of the binary turns it
+    // up.
+    //
+    // The handler fires from inside the load, before the value reaches
+    // its register, so the reading instruction is still the current one
+    // and PC names it. Observation only: a watch handler must not
+    // JumpTo(), because the load it interrupted still has to finish.
+    //
+    // Only the interpreter can see these — compiled code reads memory
+    // without asking — so arming one takes the console off the JIT (see
+    // mds_set_watches). That makes this an instrument for scouting, not
+    // something to leave installed.
+    //
+    // Host state, outside DoSavestate, exactly like the traps.
+    typedef void (*WatchFn)(void* userdata, u32 addr);
+
+    void SetWatches(const u32* addrs, u32 count, WatchFn fn, void* userdata);
+
+    // The trap filter's shape, keyed on the data address instead: one
+    // bit test per load, and a collision costs only a spurious callback
+    // the host drops by exact address.
+    bool IsWatched(u32 addr) const
+    {
+        if (!WatchHandler) return false;
+        u32 i = (addr >> 1) & 0xffff;
+        return WatchFilter[i >> 3] & (1 << (i & 7));
+    }
+
+    void CheckWatch(u32 addr)
+    {
+        if (IsWatched(addr))
+            WatchHandler(WatchUserdata, addr);
+    }
+
 
     virtual void DataRead8(u32 addr, u32* val) = 0;
     virtual void DataRead16(u32 addr, u32* val) = 0;
@@ -232,6 +270,11 @@ public:
     TrapFn TrapHandler = nullptr;
     void* TrapUserdata = nullptr;
     u8 TrapFilter[0x10000 / 8] = {};
+
+    // See SetWatches/CheckWatch, the same shape on the data side.
+    WatchFn WatchHandler = nullptr;
+    void* WatchUserdata = nullptr;
+    u8 WatchFilter[0x10000 / 8] = {};
 
     melonDS::NDS& NDS;
 protected:

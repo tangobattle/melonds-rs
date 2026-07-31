@@ -268,6 +268,12 @@ pub struct Nds {
     traps: Option<Box<TrapTable>>,
     /// The ARM7's table, same lifetime contract; see [`Nds::set_traps7`].
     traps7: Option<Box<TrapTable>>,
+    /// The data-read watch tables, same lifetime contract; see
+    /// [`Nds::set_watches`]. Watches dispatch through the trap
+    /// trampoline — a handler keyed by address is the same job either
+    /// way — so they carry the same table type.
+    watches: Option<Box<TrapTable>>,
+    watches7: Option<Box<TrapTable>>,
 }
 
 /// What a trap trampoline needs: the handlers, by address, and a way
@@ -294,6 +300,8 @@ unsafe extern "C" fn trap_trampoline(userdata: *mut std::ffi::c_void, addr: u32)
         _host: None,
         traps: None,
         traps7: None,
+        watches: None,
+        watches7: None,
     };
     handler(&mut nds);
     // The borrowed wrapper must not free the instance or disarm the
@@ -351,6 +359,8 @@ impl Nds {
             _host: Some(host),
             traps: None,
             traps7: None,
+            watches: None,
+            watches7: None,
         })
     }
 
@@ -413,6 +423,73 @@ impl Nds {
             )
         };
         self.traps7 = (!addrs.is_empty()).then_some(table);
+    }
+
+    /// Install ARM9 data-read watches: `handler` runs when the CPU reads
+    /// any of `addrs`, from inside the load and before the value reaches
+    /// its register — so [`pc`](Self::pc) names the reading instruction
+    /// and [`reg`](Self::reg) reads that instruction's registers.
+    ///
+    /// This answers the question a trap cannot. A trap finds code by its
+    /// address, which is no help when you know a variable matters but
+    /// not who reads it: if nothing branches on the value there is no
+    /// coverage difference to diff, and if the access is computed there
+    /// is no literal to search the binary for. A watch finds the reader
+    /// by what it touches.
+    ///
+    /// **Observation only.** Do not [`jump`](Self::jump) from a watch
+    /// handler: the load it interrupted still has to complete, and the
+    /// instruction is mid-execution rather than about to start.
+    ///
+    /// Byte reads report their own address; wider ones report the
+    /// aligned address the load goes to — so watch the word a field sits
+    /// in, not only the field's own byte. As with the traps, the address
+    /// the handler receives is authoritative: the core's filter is
+    /// approximate and unregistered addresses are dropped here.
+    ///
+    /// **A watch takes the console off the JIT** for as long as one is
+    /// installed, because compiled code reads memory without asking.
+    /// That costs a large multiple of the emulator's speed and shifts
+    /// emulated timing, so this is an instrument for scouting a single
+    /// run — never something to leave installed in a session. Pass an
+    /// empty vec to remove the watches and hand the console back.
+    pub fn set_watches(&mut self, watches: Vec<(u32, Box<dyn FnMut(&mut Nds)>)>) {
+        let addrs: Vec<u32> = watches.iter().map(|(addr, _)| *addr).collect();
+        let table = Box::new(TrapTable {
+            handlers: watches.into_iter().collect(),
+            ptr: self.ptr,
+        });
+        unsafe {
+            melonds_sys::mds_set_watches(
+                self.ptr,
+                addrs.as_ptr(),
+                addrs.len() as u32,
+                if addrs.is_empty() { None } else { Some(trap_trampoline) },
+                &*table as *const TrapTable as *mut std::ffi::c_void,
+            )
+        };
+        self.watches = (!addrs.is_empty()).then_some(table);
+    }
+
+    /// [`set_watches`](Self::set_watches), but for the ARM7 — same
+    /// contracts, including that either processor's watches take the
+    /// whole console off the JIT.
+    pub fn set_watches7(&mut self, watches: Vec<(u32, Box<dyn FnMut(&mut Nds)>)>) {
+        let addrs: Vec<u32> = watches.iter().map(|(addr, _)| *addr).collect();
+        let table = Box::new(TrapTable {
+            handlers: watches.into_iter().collect(),
+            ptr: self.ptr,
+        });
+        unsafe {
+            melonds_sys::mds_set_watches7(
+                self.ptr,
+                addrs.as_ptr(),
+                addrs.len() as u32,
+                if addrs.is_empty() { None } else { Some(trap_trampoline) },
+                &*table as *const TrapTable as *mut std::ffi::c_void,
+            )
+        };
+        self.watches7 = (!addrs.is_empty()).then_some(table);
     }
 
     /// One ARM9 general register, 0-15. Inside a trap this is how a

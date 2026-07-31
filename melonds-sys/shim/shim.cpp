@@ -72,6 +72,21 @@ static void mds_apply_jit_gate(MdsNds* w)
 #endif
 }
 
+// Watches, unlike traps, cannot run under the JIT: they live in the
+// interpreter's load paths, and compiled code reads memory without
+// going through them. So a watch on either processor puts the whole
+// console back on the interpreter, and taking the last one off hands it
+// back to the JIT. Both directions reset the block cache — the code
+// compiled either side of the switch was compiled for the other regime.
+static void mds_apply_watch_gate(MdsNds* w)
+{
+#ifdef JIT_ENABLED
+    bool watching = w->nds->ARM9.WatchHandler || w->nds->ARM7.WatchHandler;
+    w->nds->SetJITArgs(watching ? std::nullopt : std::optional<JITArgs>(JITArgs()));
+    w->nds->JIT.ResetBlockCache();
+#endif
+}
+
 MdsNds* mds_nds_new(const uint8_t* rom, uint32_t rom_len, const uint8_t* save, uint32_t save_len, int instance_id,
                     void* userdata)
 {
@@ -276,6 +291,18 @@ void mds_set_traps7(MdsNds* w, const uint32_t* addrs, uint32_t count, MdsTrapFn 
 {
     w->nds->ARM7.SetTraps(addrs, count, reinterpret_cast<melonDS::ARM::TrapFn>(fn), userdata);
     mds_apply_jit_gate(w);
+}
+
+void mds_set_watches(MdsNds* w, const uint32_t* addrs, uint32_t count, MdsWatchFn fn, void* userdata)
+{
+    w->nds->ARM9.SetWatches(addrs, count, reinterpret_cast<melonDS::ARM::WatchFn>(fn), userdata);
+    mds_apply_watch_gate(w);
+}
+
+void mds_set_watches7(MdsNds* w, const uint32_t* addrs, uint32_t count, MdsWatchFn fn, void* userdata)
+{
+    w->nds->ARM7.SetWatches(addrs, count, reinterpret_cast<melonDS::ARM::WatchFn>(fn), userdata);
+    mds_apply_watch_gate(w);
 }
 
 uint64_t mds_sys_timestamp(MdsNds* w)

@@ -857,6 +857,8 @@ void ARMv5::DataRead8(u32 addr, u32* val)
 
     DataRegion = addr;
 
+    CheckWatch(addr);
+
     if (addr < ITCMSize)
     {
         DataCycles = 1;
@@ -885,6 +887,8 @@ void ARMv5::DataRead16(u32 addr, u32* val)
     DataRegion = addr;
 
     addr &= ~1;
+
+    CheckWatch(addr);
 
     if (addr < ITCMSize)
     {
@@ -915,6 +919,8 @@ void ARMv5::DataRead32(u32 addr, u32* val)
 
     addr &= ~3;
 
+    CheckWatch(addr);
+
     if (addr < ITCMSize)
     {
         DataCycles = 1;
@@ -935,6 +941,8 @@ void ARMv5::DataRead32(u32 addr, u32* val)
 void ARMv5::DataRead32S(u32 addr, u32* val)
 {
     addr &= ~3;
+
+    CheckWatch(addr);
 
     if (addr < ITCMSize)
     {
