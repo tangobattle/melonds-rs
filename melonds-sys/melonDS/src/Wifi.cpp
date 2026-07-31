@@ -819,7 +819,13 @@ void Wifi::FireTX()
 
 void Wifi::SendMPDefaultReply()
 {
-    u8 reply[12 + 28];
+    // Zeroed, because the eight header bytes below the rate are never
+    // written and the whole buffer goes out on the air: uninitialised
+    // stack reached the peer's MPClientReplies, which a savestate
+    // carries, so two runs of the same match held different bytes in
+    // emulated state for no reason anyone could see. Hardware sends no
+    // such thing.
+    u8 reply[12 + 28] = {};
 
     *(u16*)&reply[0xA] = 28; // length
 
