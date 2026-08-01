@@ -919,7 +919,13 @@ void Wifi::SendMPReply(u16 clienttime, u16 clientmask)
 
 void Wifi::SendMPAck(u16 cmdcount, u16 clientfail)
 {
-    u8 ack[12 + 32];
+    // Zeroed for the reason SendMPDefaultReply's buffer is: the header
+    // below leaves bytes 4-7 unwritten, and the frame goes on the air
+    // whole. The peer copies it into RXBuffer, which a savestate
+    // carries — so four bytes of this stack frame were being written
+    // down as emulated state, and two runs of the same binary on the
+    // same inputs disagreed about them.
+    u8 ack[12 + 32] = {};
 
     *(u16*)&ack[0xA] = 32; // length
 
