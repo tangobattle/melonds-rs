@@ -557,6 +557,32 @@ protected:
     bool RunningGame;
     u64 LastSysClockCycles;
     u64 FrameStartTimestamp = 0;
+
+    // A tick advances a fixed span of emulated time — one video frame's
+    // worth of system clock — rather than "however long the next video
+    // frame takes". For a console whose frames are the hardware's 263
+    // lines these are the same thing, exactly: 263 lines IS that span.
+    // They differ only for a console whose game stretches its LCD, and
+    // there the span is the honest one — such a console produces
+    // slightly fewer frames per second, which is what the hardware
+    // does, rather than running its clocks fast.
+    //
+    // That distinction is what a linked pair rests on. A DS wireless
+    // client phase-locks by writing VCOUNT, so its frames change
+    // length; advanced a frame at a time it would consume more emulated
+    // microseconds per tick than the host, and the two wifi clocks
+    // would diverge by the frame-length ratio — a drift the client then
+    // tries to correct with the very knob that causes it, so it never
+    // settles. Advanced a span at a time, both consoles cover the same
+    // emulated time per tick whatever either game does to its display.
+    //
+    // Absolute rather than a per-call duration so that the tail of a
+    // frame that overran carries into the next span instead of being
+    // rounded away.
+    u64 SliceEnd = 0;
+    // Whether the last call stopped inside a video frame, so the next
+    // must resume that frame rather than start another.
+    bool MidSlice = false;
     u64 NextTarget();
     u64 NextTargetSleep();
     void CheckKeyIRQ(u32 cpu, u32 oldkey, u32 newkey);

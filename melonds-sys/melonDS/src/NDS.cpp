@@ -58,6 +58,9 @@ using namespace Platform;
 // which the one cart this core exists to run is comfortable with, and
 // takes the slice count down to the events that actually occur.
 const s32 kMaxIterationCycles = 256;
+// One video frame of system clock: 263 scanlines of 355*6 cycles. The
+// span a tick advances — see NDS::SliceEnd.
+const u64 kFrameCycles = 560190;
 const s32 kIterationCycleMargin = 8;
 
 // timing notes
@@ -488,6 +491,8 @@ void NDS::Reset()
     ARM9Timestamp = 0; ARM9Target = 0;
     ARM7Timestamp = 0; ARM7Target = 0;
     SysTimestamp = 0;
+    SliceEnd = 0;
+    MidSlice = false;
 
     InitTimings();
 
@@ -769,6 +774,20 @@ bool NDS::DoSavestate(Savestate* file)
     file->Var64(&SysTimestamp);
     file->Var64(&LastSysClockCycles);
     file->Var64(&FrameStartTimestamp);
+    // 14.3: where this tick's span of emulated time ends, and whether
+    // the console is partway through a video frame at that point. A
+    // state that carried neither resumed at a frame boundary and lost
+    // whatever remained of a stretched one.
+    if (file->IsAtLeastVersion(14, 3))
+    {
+        file->Var64(&SliceEnd);
+        file->VarBool(&MidSlice);
+    }
+    else if (!file->Saving)
+    {
+        SliceEnd = SysTimestamp;
+        MidSlice = false;
+    }
     file->Var32(&NumFrames);
     file->Var32(&NumLagFrames);
     file->Bool32(&LagFrameFlag);
@@ -1016,9 +1035,25 @@ u32 NDS::RunFrame()
 
     LagFrameFlag = true;
     bool runFrame = Running && !(CPUStop & CPUStop_Sleep);
+
+    // This call's span of emulated time (see SliceEnd). A gap of more
+    // than a whole span means the timeline moved under us — a boot, or
+    // a state from elsewhere — so start a fresh span there rather than
+    // trying to catch up; anything smaller is the previous span's
+    // overrun, which is exactly what has to carry.
+    if (SliceEnd + kFrameCycles < SysTimestamp)
+        SliceEnd = SysTimestamp;
+    SliceEnd += kFrameCycles;
+
+    // Cleared here rather than where it is read: the outer loop below
+    // can go round again (the sleep path), and only the first pass is
+    // resuming anything.
+    bool resuming = MidSlice;
+    MidSlice = false;
+
     while (Running)
     {
-        u64 frametarget = SysTimestamp + 560190;
+        u64 frametarget = SysTimestamp + kFrameCycles;
 
         if (CPUStop & CPUStop_Sleep)
         {
@@ -1054,13 +1089,14 @@ u32 NDS::RunFrame()
                 ARM7.CheckGdbIncoming();
             }
 
-            if (!(CPUStop & CPUStop_Wakeup))
+            if (!(CPUStop & CPUStop_Wakeup) && !resuming)
             {
                 GPU.StartFrame();
             }
             CPUStop &= ~CPUStop_Wakeup;
+            resuming = false;
 
-            while (Running && GPU.TotalScanlines==0)
+            while (Running && GPU.TotalScanlines==0 && SysTimestamp < SliceEnd)
             {
                 u64 target = NextTarget();
                 ARM9Target = target << ARM9ClockShift;
@@ -1130,7 +1166,16 @@ u32 NDS::RunFrame()
         }
 
         if (GPU.TotalScanlines == 0)
+        {
+            // The span ended inside a video frame. Leave the frame
+            // running — the next call picks it up where the LCD is.
+            if (SysTimestamp >= SliceEnd)
+            {
+                MidSlice = true;
+                break;
+            }
             continue;
+        }
 
 #ifdef DEBUG_CHECK_DESYNC
         Log(LogLevel::Debug, "[%08X%08X] ARM9=%ld, ARM7=%ld, GPU=%ld\n",
