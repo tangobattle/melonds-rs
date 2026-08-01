@@ -760,7 +760,7 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
                 else
                 {
                     MOV(X0, RCPU);
-                    QuickCallFunction(X1, ARMInterpreter::A_BLX_IMM);
+                    QuickCallFunction(X1, static_cast<void (*)(ARM*)>(ARMInterpreter::A_BLX_IMM));
                 }
             }
             else if (cond == 0xF)

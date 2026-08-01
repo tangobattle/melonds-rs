@@ -18,6 +18,8 @@
 
 #include <stdio.h>
 #include "ARM.h"
+#include "NDS.h"
+#include "ARMInterpreter_LoadStore_Names.h"
 
 
 namespace melonDS::ARMInterpreter
@@ -146,62 +148,72 @@ namespace melonDS::ARMInterpreter
 
 #define A_IMPLEMENT_WB_LDRSTR(x) \
 \
-void A_##x##_IMM(ARM* cpu) \
+template<class T> void A_##x##_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_IMM \
     A_##x \
 } \
 \
-void A_##x##_REG_LSL(ARM* cpu) \
+template<class T> void A_##x##_REG_LSL(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_REG(LSL_IMM) \
     A_##x \
 } \
 \
-void A_##x##_REG_LSR(ARM* cpu) \
+template<class T> void A_##x##_REG_LSR(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_REG(LSR_IMM) \
     A_##x \
 } \
 \
-void A_##x##_REG_ASR(ARM* cpu) \
+template<class T> void A_##x##_REG_ASR(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_REG(ASR_IMM) \
     A_##x \
 } \
 \
-void A_##x##_REG_ROR(ARM* cpu) \
+template<class T> void A_##x##_REG_ROR(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_REG(ROR_IMM) \
     A_##x \
 } \
 \
-void A_##x##_POST_IMM(ARM* cpu) \
+template<class T> void A_##x##_POST_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_IMM \
     A_##x##_POST \
 } \
 \
-void A_##x##_POST_REG_LSL(ARM* cpu) \
+template<class T> void A_##x##_POST_REG_LSL(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_REG(LSL_IMM) \
     A_##x##_POST \
 } \
 \
-void A_##x##_POST_REG_LSR(ARM* cpu) \
+template<class T> void A_##x##_POST_REG_LSR(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_REG(LSR_IMM) \
     A_##x##_POST \
 } \
 \
-void A_##x##_POST_REG_ASR(ARM* cpu) \
+template<class T> void A_##x##_POST_REG_ASR(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_REG(ASR_IMM) \
     A_##x##_POST \
 } \
 \
-void A_##x##_POST_REG_ROR(ARM* cpu) \
+template<class T> void A_##x##_POST_REG_ROR(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_WB_CALC_OFFSET_REG(ROR_IMM) \
     A_##x##_POST \
 }
@@ -326,25 +338,29 @@ A_IMPLEMENT_WB_LDRSTR(LDRB)
 
 #define A_IMPLEMENT_HD_LDRSTR(x) \
 \
-void A_##x##_IMM(ARM* cpu) \
+template<class T> void A_##x##_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_HD_CALC_OFFSET_IMM \
     A_##x \
 } \
 \
-void A_##x##_REG(ARM* cpu) \
+template<class T> void A_##x##_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_HD_CALC_OFFSET_REG \
     A_##x \
 } \
-void A_##x##_POST_IMM(ARM* cpu) \
+template<class T> void A_##x##_POST_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_HD_CALC_OFFSET_IMM \
     A_##x##_POST \
 } \
 \
-void A_##x##_POST_REG(ARM* cpu) \
+template<class T> void A_##x##_POST_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_HD_CALC_OFFSET_REG \
     A_##x##_POST \
 }
@@ -358,8 +374,9 @@ A_IMPLEMENT_HD_LDRSTR(LDRSH)
 
 
 
-void A_SWP(ARM* cpu)
+template<class T> void A_SWP(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 base = cpu->R[(cpu->CurInstr >> 16) & 0xF];
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
 
@@ -374,8 +391,9 @@ void A_SWP(ARM* cpu)
     cpu->AddCycles_CDI();
 }
 
-void A_SWPB(ARM* cpu)
+template<class T> void A_SWPB(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 base = cpu->R[(cpu->CurInstr >> 16) & 0xF];
     u32 rm = cpu->R[cpu->CurInstr & 0xF] & 0xFF;
 
@@ -390,8 +408,9 @@ void A_SWPB(ARM* cpu)
 
 
 
-void A_LDM(ARM* cpu)
+template<class T> void A_LDM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 baseid = (cpu->CurInstr >> 16) & 0xF;
     u32 base = cpu->R[baseid];
     u32 wbbase;
@@ -414,16 +433,18 @@ void A_LDM(ARM* cpu)
     if ((cpu->CurInstr & (1<<22)) && !(cpu->CurInstr & (1<<15)))
         cpu->UpdateMode(cpu->CPSR, (cpu->CPSR&~0x1F)|0x10, true);
 
-    for (int i = 0; i < 15; i++)
+    // Walk the register list, not the sixteen slots it could name: a
+    // typical LDM moves three or four registers and this ran the loop
+    // fifteen times regardless. Ascending order, which is the order
+    // the addresses go in, is what `ctz` gives.
+    for (u32 rlist = cpu->CurInstr & 0x7FFF; rlist; rlist &= rlist - 1)
     {
-        if (cpu->CurInstr & (1<<i))
-        {
-            if (preinc) base += 4;
-            if (first) cpu->DataRead32 (base, &cpu->R[i]);
-            else       cpu->DataRead32S(base, &cpu->R[i]);
-            first = false;
-            if (!preinc) base += 4;
-        }
+        u32 i = __builtin_ctz(rlist);
+        if (preinc) base += 4;
+        if (first) cpu->DataRead32 (base, &cpu->R[i]);
+        else       cpu->DataRead32S(base, &cpu->R[i]);
+        first = false;
+        if (!preinc) base += 4;
     }
 
     u32 pc = 0;
@@ -466,8 +487,9 @@ void A_LDM(ARM* cpu)
     cpu->AddCycles_CDI();
 }
 
-void A_STM(ARM* cpu)
+template<class T> void A_STM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 baseid = (cpu->CurInstr >> 16) & 0xF;
     u32 base = cpu->R[baseid];
     u32 oldbase = base;
@@ -496,26 +518,25 @@ void A_STM(ARM* cpu)
         cpu->UpdateMode(cpu->CPSR, (cpu->CPSR&~0x1F)|0x10, true);
     }
 
-    for (u32 i = 0; i < 16; i++)
+    // See A_LDM: the register list, not the sixteen slots.
+    for (u32 rlist = cpu->CurInstr & 0xFFFF; rlist; rlist &= rlist - 1)
     {
-        if (cpu->CurInstr & (1<<i))
+        u32 i = __builtin_ctz(rlist);
+        if (preinc) base += 4;
+
+        if (i == baseid && !isbanked)
         {
-            if (preinc) base += 4;
-
-            if (i == baseid && !isbanked)
-            {
-                if ((cpu->Num == 0) || (!(cpu->CurInstr & ((1<<i)-1))))
-                    first ? cpu->DataWrite32(base, oldbase) : cpu->DataWrite32S(base, oldbase);
-                else
-                    first ? cpu->DataWrite32(base, base) : cpu->DataWrite32S(base, base); // checkme
-            }
+            if ((cpu->Num == 0) || (!(cpu->CurInstr & ((1<<i)-1))))
+                first ? cpu->DataWrite32(base, oldbase) : cpu->DataWrite32S(base, oldbase);
             else
-                first ? cpu->DataWrite32(base, cpu->R[i]) : cpu->DataWrite32S(base, cpu->R[i]);
-
-            first = false;
-
-            if (!preinc) base += 4;
+                first ? cpu->DataWrite32(base, base) : cpu->DataWrite32S(base, base); // checkme
         }
+        else
+            first ? cpu->DataWrite32(base, cpu->R[i]) : cpu->DataWrite32S(base, cpu->R[i]);
+
+        first = false;
+
+        if (!preinc) base += 4;
     }
 
     if (cpu->CurInstr & (1<<22))
@@ -534,8 +555,9 @@ void A_STM(ARM* cpu)
 
 
 
-void T_LDR_PCREL(ARM* cpu)
+template<class T> void T_LDR_PCREL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 addr = (cpu->R[15] & ~0x2) + ((cpu->CurInstr & 0xFF) << 2);
     cpu->DataRead32(addr, &cpu->R[(cpu->CurInstr >> 8) & 0x7]);
 
@@ -543,24 +565,27 @@ void T_LDR_PCREL(ARM* cpu)
 }
 
 
-void T_STR_REG(ARM* cpu)
+template<class T> void T_STR_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 addr = cpu->R[(cpu->CurInstr >> 3) & 0x7] + cpu->R[(cpu->CurInstr >> 6) & 0x7];
     cpu->DataWrite32(addr, cpu->R[cpu->CurInstr & 0x7]);
 
     cpu->AddCycles_CD();
 }
 
-void T_STRB_REG(ARM* cpu)
+template<class T> void T_STRB_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 addr = cpu->R[(cpu->CurInstr >> 3) & 0x7] + cpu->R[(cpu->CurInstr >> 6) & 0x7];
     cpu->DataWrite8(addr, cpu->R[cpu->CurInstr & 0x7]);
 
     cpu->AddCycles_CD();
 }
 
-void T_LDR_REG(ARM* cpu)
+template<class T> void T_LDR_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 addr = cpu->R[(cpu->CurInstr >> 3) & 0x7] + cpu->R[(cpu->CurInstr >> 6) & 0x7];
 
     u32 val;
@@ -570,8 +595,9 @@ void T_LDR_REG(ARM* cpu)
     cpu->AddCycles_CDI();
 }
 
-void T_LDRB_REG(ARM* cpu)
+template<class T> void T_LDRB_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 addr = cpu->R[(cpu->CurInstr >> 3) & 0x7] + cpu->R[(cpu->CurInstr >> 6) & 0x7];
     cpu->DataRead8(addr, &cpu->R[cpu->CurInstr & 0x7]);
 
@@ -579,16 +605,18 @@ void T_LDRB_REG(ARM* cpu)
 }
 
 
-void T_STRH_REG(ARM* cpu)
+template<class T> void T_STRH_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 addr = cpu->R[(cpu->CurInstr >> 3) & 0x7] + cpu->R[(cpu->CurInstr >> 6) & 0x7];
     cpu->DataWrite16(addr, cpu->R[cpu->CurInstr & 0x7]);
 
     cpu->AddCycles_CD();
 }
 
-void T_LDRSB_REG(ARM* cpu)
+template<class T> void T_LDRSB_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 addr = cpu->R[(cpu->CurInstr >> 3) & 0x7] + cpu->R[(cpu->CurInstr >> 6) & 0x7];
     cpu->DataRead8(addr, &cpu->R[cpu->CurInstr & 0x7]);
     cpu->R[cpu->CurInstr & 0x7] = (s32)(s8)cpu->R[cpu->CurInstr & 0x7];
@@ -596,16 +624,18 @@ void T_LDRSB_REG(ARM* cpu)
     cpu->AddCycles_CDI();
 }
 
-void T_LDRH_REG(ARM* cpu)
+template<class T> void T_LDRH_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 addr = cpu->R[(cpu->CurInstr >> 3) & 0x7] + cpu->R[(cpu->CurInstr >> 6) & 0x7];
     cpu->DataRead16(addr, &cpu->R[cpu->CurInstr & 0x7]);
 
     cpu->AddCycles_CDI();
 }
 
-void T_LDRSH_REG(ARM* cpu)
+template<class T> void T_LDRSH_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 addr = cpu->R[(cpu->CurInstr >> 3) & 0x7] + cpu->R[(cpu->CurInstr >> 6) & 0x7];
     cpu->DataRead16(addr, &cpu->R[cpu->CurInstr & 0x7]);
     cpu->R[cpu->CurInstr & 0x7] = (s32)(s16)cpu->R[cpu->CurInstr & 0x7];
@@ -614,8 +644,9 @@ void T_LDRSH_REG(ARM* cpu)
 }
 
 
-void T_STR_IMM(ARM* cpu)
+template<class T> void T_STR_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 offset = (cpu->CurInstr >> 4) & 0x7C;
     offset += cpu->R[(cpu->CurInstr >> 3) & 0x7];
 
@@ -623,8 +654,9 @@ void T_STR_IMM(ARM* cpu)
     cpu->AddCycles_CD();
 }
 
-void T_LDR_IMM(ARM* cpu)
+template<class T> void T_LDR_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 offset = (cpu->CurInstr >> 4) & 0x7C;
     offset += cpu->R[(cpu->CurInstr >> 3) & 0x7];
 
@@ -634,8 +666,9 @@ void T_LDR_IMM(ARM* cpu)
     cpu->AddCycles_CDI();
 }
 
-void T_STRB_IMM(ARM* cpu)
+template<class T> void T_STRB_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 offset = (cpu->CurInstr >> 6) & 0x1F;
     offset += cpu->R[(cpu->CurInstr >> 3) & 0x7];
 
@@ -643,8 +676,9 @@ void T_STRB_IMM(ARM* cpu)
     cpu->AddCycles_CD();
 }
 
-void T_LDRB_IMM(ARM* cpu)
+template<class T> void T_LDRB_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 offset = (cpu->CurInstr >> 6) & 0x1F;
     offset += cpu->R[(cpu->CurInstr >> 3) & 0x7];
 
@@ -653,8 +687,9 @@ void T_LDRB_IMM(ARM* cpu)
 }
 
 
-void T_STRH_IMM(ARM* cpu)
+template<class T> void T_STRH_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 offset = (cpu->CurInstr >> 5) & 0x3E;
     offset += cpu->R[(cpu->CurInstr >> 3) & 0x7];
 
@@ -662,8 +697,9 @@ void T_STRH_IMM(ARM* cpu)
     cpu->AddCycles_CD();
 }
 
-void T_LDRH_IMM(ARM* cpu)
+template<class T> void T_LDRH_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 offset = (cpu->CurInstr >> 5) & 0x3E;
     offset += cpu->R[(cpu->CurInstr >> 3) & 0x7];
 
@@ -672,8 +708,9 @@ void T_LDRH_IMM(ARM* cpu)
 }
 
 
-void T_STR_SPREL(ARM* cpu)
+template<class T> void T_STR_SPREL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 offset = (cpu->CurInstr << 2) & 0x3FC;
     offset += cpu->R[13];
 
@@ -681,8 +718,9 @@ void T_STR_SPREL(ARM* cpu)
     cpu->AddCycles_CD();
 }
 
-void T_LDR_SPREL(ARM* cpu)
+template<class T> void T_LDR_SPREL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 offset = (cpu->CurInstr << 2) & 0x3FC;
     offset += cpu->R[13];
 
@@ -691,8 +729,9 @@ void T_LDR_SPREL(ARM* cpu)
 }
 
 
-void T_PUSH(ARM* cpu)
+template<class T> void T_PUSH(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     int nregs = __builtin_popcount(cpu->CurInstr & 0x1FF);
     bool first = true;
 
@@ -700,15 +739,14 @@ void T_PUSH(ARM* cpu)
     base -= (nregs<<2);
     cpu->R[13] = base;
 
-    for (int i = 0; i < 8; i++)
+    // The register list, not the eight slots it could name. See A_LDM.
+    for (u32 rlist = cpu->CurInstr & 0xFF; rlist; rlist &= rlist - 1)
     {
-        if (cpu->CurInstr & (1<<i))
-        {
-            if (first) cpu->DataWrite32 (base, cpu->R[i]);
-            else       cpu->DataWrite32S(base, cpu->R[i]);
-            first = false;
-            base += 4;
-        }
+        u32 i = __builtin_ctz(rlist);
+        if (first) cpu->DataWrite32 (base, cpu->R[i]);
+        else       cpu->DataWrite32S(base, cpu->R[i]);
+        first = false;
+        base += 4;
     }
 
     if (cpu->CurInstr & (1<<8))
@@ -720,20 +758,20 @@ void T_PUSH(ARM* cpu)
     cpu->AddCycles_CD();
 }
 
-void T_POP(ARM* cpu)
+template<class T> void T_POP(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 base = cpu->R[13];
     bool first = true;
 
-    for (int i = 0; i < 8; i++)
+    // The register list, not the eight slots it could name. See A_LDM.
+    for (u32 rlist = cpu->CurInstr & 0xFF; rlist; rlist &= rlist - 1)
     {
-        if (cpu->CurInstr & (1<<i))
-        {
-            if (first) cpu->DataRead32 (base, &cpu->R[i]);
-            else       cpu->DataRead32S(base, &cpu->R[i]);
-            first = false;
-            base += 4;
-        }
+        u32 i = __builtin_ctz(rlist);
+        if (first) cpu->DataRead32 (base, &cpu->R[i]);
+        else       cpu->DataRead32S(base, &cpu->R[i]);
+        first = false;
+        base += 4;
     }
 
     if (cpu->CurInstr & (1<<8))
@@ -750,20 +788,20 @@ void T_POP(ARM* cpu)
     cpu->AddCycles_CDI();
 }
 
-void T_STMIA(ARM* cpu)
+template<class T> void T_STMIA(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 base = cpu->R[(cpu->CurInstr >> 8) & 0x7];
     bool first = true;
 
-    for (int i = 0; i < 8; i++)
+    // The register list, not the eight slots it could name. See A_LDM.
+    for (u32 rlist = cpu->CurInstr & 0xFF; rlist; rlist &= rlist - 1)
     {
-        if (cpu->CurInstr & (1<<i))
-        {
-            if (first) cpu->DataWrite32 (base, cpu->R[i]);
-            else       cpu->DataWrite32S(base, cpu->R[i]);
-            first = false;
-            base += 4;
-        }
+        u32 i = __builtin_ctz(rlist);
+        if (first) cpu->DataWrite32 (base, cpu->R[i]);
+        else       cpu->DataWrite32S(base, cpu->R[i]);
+        first = false;
+        base += 4;
     }
 
     // TODO: check "Rb included in Rlist" case
@@ -771,20 +809,20 @@ void T_STMIA(ARM* cpu)
     cpu->AddCycles_CD();
 }
 
-void T_LDMIA(ARM* cpu)
+template<class T> void T_LDMIA(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 base = cpu->R[(cpu->CurInstr >> 8) & 0x7];
     bool first = true;
 
-    for (int i = 0; i < 8; i++)
+    // The register list, not the eight slots it could name. See A_LDM.
+    for (u32 rlist = cpu->CurInstr & 0xFF; rlist; rlist &= rlist - 1)
     {
-        if (cpu->CurInstr & (1<<i))
-        {
-            if (first) cpu->DataRead32 (base, &cpu->R[i]);
-            else       cpu->DataRead32S(base, &cpu->R[i]);
-            first = false;
-            base += 4;
-        }
+        u32 i = __builtin_ctz(rlist);
+        if (first) cpu->DataRead32 (base, &cpu->R[i]);
+        else       cpu->DataRead32S(base, &cpu->R[i]);
+        first = false;
+        base += 4;
     }
 
     if (!(cpu->CurInstr & (1<<((cpu->CurInstr >> 8) & 0x7))))
@@ -793,6 +831,29 @@ void T_LDMIA(ARM* cpu)
     cpu->AddCycles_CDI();
 }
 
+
+
+
+// One copy of every handler above per CPU, which is what lets each of
+// them call `ARMv5::DataRead32` or `ARMv4::DataRead32` directly instead
+// of asking `ARM` which one it is. `ARMInterpreter.cpp` puts the two
+// sets into two instruction tables.
+#define MELONDS_INSTANTIATE(name)        \
+    template void name<ARMv5>(ARM* cpu); \
+    template void name<ARMv4>(ARM* cpu);
+MELONDS_LOADSTORE_NAMES(MELONDS_INSTANTIATE)
+#undef MELONDS_INSTANTIATE
+
+#ifdef JIT_ENABLED
+#define MELONDS_DEFINE_DISPATCH(name)                       \
+    void name(ARM* cpu)                                     \
+    {                                                       \
+        if (cpu->Num == 0) name<ARMv5>(cpu);                \
+        else               name<ARMv4>(cpu);                \
+    }
+MELONDS_LOADSTORE_NAMES(MELONDS_DEFINE_DISPATCH)
+#undef MELONDS_DEFINE_DISPATCH
+#endif
 
 }
 

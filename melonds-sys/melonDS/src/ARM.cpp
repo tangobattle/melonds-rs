@@ -674,6 +674,18 @@ void ARMv5::Execute()
         }
     }
 
+    // Whether any trap is installed, asked once instead of once per
+    // instruction.
+    //
+    // Nothing can arm one while this loop runs: `SetTraps` is reached
+    // through `&mut Nds`, which the driver only holds between ticks,
+    // and the `Host` callbacks a running frame does make are handed no
+    // console at all. The one thing that can is a trap handler — which
+    // only runs if traps were already armed — so re-reading after a
+    // fire covers it exactly. Worth ~2% of a tick, all of it paid by
+    // the match, which runs with no traps at all.
+    bool traps = TrapHandler != nullptr;
+
     while (NDS.ARM9Timestamp < NDS.ARM9Target)
     {
 #ifdef JIT_ENABLED
@@ -737,7 +749,7 @@ void ARMv5::Execute()
 
                 // A trap here may JumpTo() elsewhere; the prefetch below
                 // then picks up the target rather than this instruction.
-                CheckTrap(R[15] - 2);
+                if (traps) [[unlikely]] { CheckTrap(R[15] - 2); traps = TrapHandler != nullptr; }
 
                 // prefetch
                 R[15] += 2;
@@ -748,14 +760,14 @@ void ARMv5::Execute()
 
                 // actually execute
                 u32 icode = (CurInstr >> 6) & 0x3FF;
-                ARMInterpreter::THUMBInstrTable[icode](this);
+                ARMInterpreter::V5::THUMBInstrTable[icode](this);
             }
             else
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
                     GdbCheckC();
 
-                CheckTrap(R[15] - 4);
+                if (traps) [[unlikely]] { CheckTrap(R[15] - 4); traps = TrapHandler != nullptr; }
 
                 // prefetch
                 R[15] += 4;
@@ -767,31 +779,33 @@ void ARMv5::Execute()
                 if (CheckCondition(CurInstr >> 28))
                 {
                     u32 icode = ((CurInstr >> 4) & 0xF) | ((CurInstr >> 16) & 0xFF0);
-                    ARMInterpreter::ARMInstrTable[icode](this);
+                    ARMInterpreter::V5::ARMInstrTable[icode](this);
                 }
                 else if ((CurInstr & 0xFE000000) == 0xFA000000)
                 {
-                    ARMInterpreter::A_BLX_IMM(this);
+                    ARMInterpreter::A_BLX_IMM<ARMv5>(this);
                 }
                 else
                     AddCycles_C();
             }
 
-            // TODO optimize this shit!!!
-            if (Halted)
+            // `Halted` and `IRQ` are two bytes of one word, and neither
+            // is set on the overwhelming majority of instructions — so
+            // ask the word first and only take them apart when it says
+            // something happened. Same order as before: halt wins, and
+            // an IRQ raised by the instruction is taken at its end.
+            if (StopExecution) [[unlikely]]
             {
-                if (Halted == 1 && NDS.ARM9Timestamp < NDS.ARM9Target)
+                if (Halted)
                 {
-                    NDS.ARM9Timestamp = NDS.ARM9Target;
+                    if (Halted == 1 && NDS.ARM9Timestamp < NDS.ARM9Target)
+                    {
+                        NDS.ARM9Timestamp = NDS.ARM9Target;
+                    }
+                    break;
                 }
-                break;
+                if (IRQ) TriggerIRQ();
             }
-            /*if (NDS::IF[0] & NDS::IE[0])
-            {
-                if (NDS::IME[0] & 0x1)
-                    TriggerIRQ();
-            }*/
-            if (IRQ) TriggerIRQ();
 
         }
 
@@ -832,6 +846,9 @@ void ARMv4::Execute()
             return;
         }
     }
+
+    // See the ARM9's copy above.
+    bool traps = TrapHandler != nullptr;
 
     while (NDS.ARM7Timestamp < NDS.ARM7Target)
     {
@@ -896,7 +913,7 @@ void ARMv4::Execute()
                 // Same contract as the ARM9's: a trap here may JumpTo()
                 // elsewhere, and the prefetch below then picks up the
                 // target rather than this instruction.
-                CheckTrap(R[15] - 2);
+                if (traps) [[unlikely]] { CheckTrap(R[15] - 2); traps = TrapHandler != nullptr; }
 
                 // prefetch
                 R[15] += 2;
@@ -906,14 +923,14 @@ void ARMv4::Execute()
 
                 // actually execute
                 u32 icode = (CurInstr >> 6);
-                ARMInterpreter::THUMBInstrTable[icode](this);
+                ARMInterpreter::V4::THUMBInstrTable[icode](this);
             }
             else
             {
                 if constexpr (mode == CPUExecuteMode::InterpreterGDB)
                     GdbCheckC();
 
-                CheckTrap(R[15] - 4);
+                if (traps) [[unlikely]] { CheckTrap(R[15] - 4); traps = TrapHandler != nullptr; }
 
                 // prefetch
                 R[15] += 4;
@@ -925,27 +942,25 @@ void ARMv4::Execute()
                 if (CheckCondition(CurInstr >> 28))
                 {
                     u32 icode = ((CurInstr >> 4) & 0xF) | ((CurInstr >> 16) & 0xFF0);
-                    ARMInterpreter::ARMInstrTable[icode](this);
+                    ARMInterpreter::V4::ARMInstrTable[icode](this);
                 }
                 else
                     AddCycles_C();
             }
 
-            // TODO optimize this shit!!!
-            if (Halted)
+            // See the ARM9's copy above.
+            if (StopExecution) [[unlikely]]
             {
-                if (Halted == 1 && NDS.ARM7Timestamp < NDS.ARM7Target)
+                if (Halted)
                 {
-                    NDS.ARM7Timestamp = NDS.ARM7Target;
+                    if (Halted == 1 && NDS.ARM7Timestamp < NDS.ARM7Target)
+                    {
+                        NDS.ARM7Timestamp = NDS.ARM7Target;
+                    }
+                    break;
                 }
-                break;
+                if (IRQ) TriggerIRQ();
             }
-            /*if (NDS::IF[1] & NDS::IE[1])
-            {
-                if (NDS::IME[1] & 0x1)
-                    TriggerIRQ();
-            }*/
-            if (IRQ) TriggerIRQ();
         }
 
         NDS.ARM7Timestamp += Cycles;
@@ -1218,156 +1233,9 @@ u32 ARMv5::ReadMem(u32 addr, int size)
 }
 #endif
 
-void ARMv4::DataRead8(u32 addr, u32* val)
-{
-    CheckWatch(addr);
-
-    *val = BusRead8(addr);
-    DataRegion = addr;
-    DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
-}
-
-void ARMv4::DataRead16(u32 addr, u32* val)
-{
-    addr &= ~1;
-
-    CheckWatch(addr);
-
-    *val = BusRead16(addr);
-    DataRegion = addr;
-    DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
-}
-
-void ARMv4::DataRead32(u32 addr, u32* val)
-{
-    addr &= ~3;
-
-    CheckWatch(addr);
-
-    *val = BusRead32(addr);
-    DataRegion = addr;
-    DataCycles = NDS.ARM7MemTimings[addr >> 15][2];
-}
-
-void ARMv4::DataRead32S(u32 addr, u32* val)
-{
-    addr &= ~3;
-
-    CheckWatch(addr);
-
-    *val = BusRead32(addr);
-    DataCycles += NDS.ARM7MemTimings[addr >> 15][3];
-}
-
-void ARMv4::DataWrite8(u32 addr, u8 val)
-{
-    BusWrite8(addr, val);
-    DataRegion = addr;
-    DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
-}
-
-void ARMv4::DataWrite16(u32 addr, u16 val)
-{
-    addr &= ~1;
-
-    BusWrite16(addr, val);
-    DataRegion = addr;
-    DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
-}
-
-void ARMv4::DataWrite32(u32 addr, u32 val)
-{
-    addr &= ~3;
-
-    BusWrite32(addr, val);
-    DataRegion = addr;
-    DataCycles = NDS.ARM7MemTimings[addr >> 15][2];
-}
-
-void ARMv4::DataWrite32S(u32 addr, u32 val)
-{
-    addr &= ~3;
-
-    BusWrite32(addr, val);
-    DataCycles += NDS.ARM7MemTimings[addr >> 15][3];
-}
-
-
-void ARMv4::AddCycles_C()
-{
-    // code only. this code fetch is sequential.
-    Cycles += NDS.ARM7MemTimings[CodeCycles][(CPSR&0x20)?1:3];
-}
-
-void ARMv4::AddCycles_CI(s32 num)
-{
-    // code+internal. results in a nonseq code fetch.
-    Cycles += NDS.ARM7MemTimings[CodeCycles][(CPSR&0x20)?0:2] + num;
-}
-
-void ARMv4::AddCycles_CDI()
-{
-    // LDR/LDM cycles.
-    s32 numC = NDS.ARM7MemTimings[CodeCycles][(CPSR&0x20)?0:2];
-    s32 numD = DataCycles;
-
-    if ((DataRegion >> 24) == 0x02) // mainRAM
-    {
-        if (CodeRegion == 0x02)
-            Cycles += numC + numD;
-        else
-        {
-            numC++;
-            Cycles += std::max(numC + numD - 3, std::max(numC, numD));
-        }
-    }
-    else if (CodeRegion == 0x02)
-    {
-        numD++;
-        Cycles += std::max(numC + numD - 3, std::max(numC, numD));
-    }
-    else
-    {
-        Cycles += numC + numD + 1;
-    }
-}
-
-void ARMv4::AddCycles_CD()
-{
-    // TODO: max gain should be 5c when writing to mainRAM
-    s32 numC = NDS.ARM7MemTimings[CodeCycles][(CPSR&0x20)?0:2];
-    s32 numD = DataCycles;
-
-    if ((DataRegion >> 24) == 0x02)
-    {
-        if (CodeRegion == 0x02)
-            Cycles += numC + numD;
-        else
-            Cycles += std::max(numC + numD - 3, std::max(numC, numD));
-    }
-    else if (CodeRegion == 0x02)
-    {
-        Cycles += std::max(numC + numD - 3, std::max(numC, numD));
-    }
-    else
-    {
-        Cycles += numC + numD;
-    }
-}
-
 u8 ARMv5::BusRead8(u32 addr)
 {
     return NDS.ARM9Read8(addr);
-}
-
-u16 ARMv5::BusRead16(u32 addr)
-{
-    return NDS.ARM9Read16(addr);
-}
-
-u32 ARMv5::BusRead32(u32 addr)
-{
-    return NDS.ARM9Read32(addr);
 }
 
 void ARMv5::BusWrite8(u32 addr, u8 val)
@@ -1380,39 +1248,5 @@ void ARMv5::BusWrite16(u32 addr, u16 val)
     NDS.ARM9Write16(addr, val);
 }
 
-void ARMv5::BusWrite32(u32 addr, u32 val)
-{
-    NDS.ARM9Write32(addr, val);
-}
-
-u8 ARMv4::BusRead8(u32 addr)
-{
-    return NDS.ARM7Read8(addr);
-}
-
-u16 ARMv4::BusRead16(u32 addr)
-{
-    return NDS.ARM7Read16(addr);
-}
-
-u32 ARMv4::BusRead32(u32 addr)
-{
-    return NDS.ARM7Read32(addr);
-}
-
-void ARMv4::BusWrite8(u32 addr, u8 val)
-{
-    NDS.ARM7Write8(addr, val);
-}
-
-void ARMv4::BusWrite16(u32 addr, u16 val)
-{
-    NDS.ARM7Write16(addr, val);
-}
-
-void ARMv4::BusWrite32(u32 addr, u32 val)
-{
-    NDS.ARM7Write32(addr, val);
-}
 }
 

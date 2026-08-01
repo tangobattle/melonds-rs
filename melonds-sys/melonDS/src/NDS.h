@@ -481,6 +481,18 @@ public: // TODO: Encapsulate the rest of these members
     virtual u8 ARM7Read8(u32 addr);
     virtual u16 ARM7Read16(u32 addr);
     virtual u32 ARM7Read32(u32 addr);
+
+    // The parts of the ARM7's address space that are plain memory, as
+    // a base and a mask it can index directly. See the definition at
+    // the end of this header — the ARM7's fetches go through it, and
+    // they are the hottest reads in the machine.
+    inline bool ARM7DirectRegion(u32 addr, const u8** mem, u32* mask) const;
+
+    // The same question for the ARM9, whose code fetches already have
+    // `CodeMem` but whose loads and stores did not. Writable, so a
+    // store can use it too — which is why the JIT's invalidation is
+    // reported alongside rather than left behind.
+    inline bool ARM9DirectRegion(u32 addr, u8** mem, u32* mask, int* jitregion);
     virtual void ARM7Write8(u32 addr, u8 val);
     virtual void ARM7Write16(u32 addr, u16 val);
     virtual void ARM7Write32(u32 addr, u32 val);
@@ -582,6 +594,624 @@ protected:
     virtual u32 GetSavestateConfig();
     virtual void DoSavestateExtra(Savestate* file) {}
 };
+
+
+// ---------------------------------------------------------------------
+// The per-instruction CPU interface.
+//
+// These are the calls an interpreted instruction makes — fetch, load,
+// store, charge cycles, branch — and they were virtual, which cost an
+// indirect call apiece and put the body somewhere the caller could
+// never see into. They dispatch on `ARM::Num` instead: 0 is always the
+// ARMv5 and 1 always the ARMv4, on a DS and on a DSi alike, so the
+// branch is exact and perfectly predicted (a run of `Execute` is all
+// one CPU). Behaviour is unchanged — the same function runs, reached a
+// cheaper way.
+//
+// They live here rather than in ARM.h because the ARM7's half reads
+// the NDS: its cycle table, and the memory its instructions fetch
+// from.
+
+inline void ARM::JumpTo(u32 addr, bool restorecpsr)
+{
+    if (Num == 0) static_cast<ARMv5*>(this)->JumpTo(addr, restorecpsr);
+    else          static_cast<ARMv4*>(this)->JumpTo(addr, restorecpsr);
+}
+
+#define MELONDS_ARM_DISPATCH(ret, name, params, args)     \
+    inline ret ARM::name params                           \
+    {                                                     \
+        if (Num == 0) return static_cast<ARMv5*>(this)->name args; \
+        else          return static_cast<ARMv4*>(this)->name args; \
+    }
+
+MELONDS_ARM_DISPATCH(void, DataRead8,   (u32 addr, u32* val), (addr, val))
+MELONDS_ARM_DISPATCH(void, DataRead16,  (u32 addr, u32* val), (addr, val))
+MELONDS_ARM_DISPATCH(void, DataRead32,  (u32 addr, u32* val), (addr, val))
+MELONDS_ARM_DISPATCH(void, DataRead32S, (u32 addr, u32* val), (addr, val))
+MELONDS_ARM_DISPATCH(void, DataWrite8,   (u32 addr, u8 val),  (addr, val))
+MELONDS_ARM_DISPATCH(void, DataWrite16,  (u32 addr, u16 val), (addr, val))
+MELONDS_ARM_DISPATCH(void, DataWrite32,  (u32 addr, u32 val), (addr, val))
+MELONDS_ARM_DISPATCH(void, DataWrite32S, (u32 addr, u32 val), (addr, val))
+MELONDS_ARM_DISPATCH(void, AddCycles_C,   (),          ())
+MELONDS_ARM_DISPATCH(void, AddCycles_CI,  (s32 numI),  (numI))
+MELONDS_ARM_DISPATCH(void, AddCycles_CDI, (),          ())
+MELONDS_ARM_DISPATCH(void, AddCycles_CD,  (),          ())
+
+#undef MELONDS_ARM_DISPATCH
+
+// The ARM7's cycle accounting, moved out of ARM.cpp so it can inline
+// into the instruction that charges it.
+
+inline void ARMv4::AddCycles_C()
+{
+    // code only. this code fetch is sequential.
+    Cycles += NDS.ARM7MemTimings[CodeCycles][(CPSR&0x20)?1:3];
+}
+
+inline void ARMv4::AddCycles_CI(s32 num)
+{
+    // code+internal. results in a nonseq code fetch.
+    Cycles += NDS.ARM7MemTimings[CodeCycles][(CPSR&0x20)?0:2] + num;
+}
+
+inline void ARMv4::AddCycles_CDI()
+{
+    // LDR/LDM cycles.
+    s32 numC = NDS.ARM7MemTimings[CodeCycles][(CPSR&0x20)?0:2];
+    s32 numD = DataCycles;
+
+    if ((DataRegion >> 24) == 0x02) // mainRAM
+    {
+        if (CodeRegion == 0x02)
+            Cycles += numC + numD;
+        else
+        {
+            numC++;
+            Cycles += std::max(numC + numD - 3, std::max(numC, numD));
+        }
+    }
+    else if (CodeRegion == 0x02)
+    {
+        numD++;
+        Cycles += std::max(numC + numD - 3, std::max(numC, numD));
+    }
+    else
+    {
+        Cycles += numC + numD + 1;
+    }
+}
+
+inline void ARMv4::AddCycles_CD()
+{
+    // TODO: max gain should be 5c when writing to mainRAM
+    s32 numC = NDS.ARM7MemTimings[CodeCycles][(CPSR&0x20)?0:2];
+    s32 numD = DataCycles;
+
+    if ((DataRegion >> 24) == 0x02)
+    {
+        if (CodeRegion == 0x02)
+            Cycles += numC + numD;
+        else
+            Cycles += std::max(numC + numD - 3, std::max(numC, numD));
+    }
+    else if (CodeRegion == 0x02)
+    {
+        Cycles += std::max(numC + numD - 3, std::max(numC, numD));
+    }
+    else
+    {
+        Cycles += numC + numD;
+    }
+}
+
+
+// The ARM7 has no cached code region the way the ARM9 has `CodeMem`
+// (its mapping moves under it, so melonDS never took the ARM9's
+// shortcut here), and so every one of its instruction fetches used to
+// leave the CPU for `NDS::ARM7Read32` — an out-of-line virtual call
+// into a switch over the whole address space, per instruction, and
+// again for every load. In practice it is reading one of three plain
+// arrays; the switch below says which, and the read then happens in
+// the caller.
+//
+// A DSi answers `false` to all of it: `DSi::ARM7Read32` overrides this
+// path with a different bus, and this is not the place to reimplement
+// it. `ConsoleType` is a member the caller already has hot.
+inline bool NDS::ARM7DirectRegion(u32 addr, const u8** mem, u32* mask) const
+{
+    if (ConsoleType != 0)
+        return false;
+
+    switch (addr & 0xFF800000)
+    {
+    case 0x02000000:
+    case 0x02800000:
+        *mem = MainRAM;
+        *mask = MainRAMMask;
+        return true;
+
+    case 0x03000000:
+        if (SWRAM_ARM7.Mem)
+        {
+            *mem = SWRAM_ARM7.Mem;
+            *mask = SWRAM_ARM7.Mask;
+            return true;
+        }
+        [[fallthrough]];
+
+    case 0x03800000:
+        *mem = ARM7WRAM;
+        *mask = ARM7WRAMSize - 1;
+        return true;
+    }
+
+    // The BIOS, with the protection its reads are subject to: a fetch
+    // from outside it cannot read it, and code below the protection
+    // boundary is hidden from code above it. Both of those answer
+    // `false` and take the long way, which is where the 0xFF..-filled
+    // result comes from.
+    //
+    // Last, not first: the ARM7 does run BIOS code (the SWI handlers,
+    // the halt loop), but a battle's fetches are overwhelmingly RAM,
+    // and asking this question ahead of the switch measured 3% slower
+    // across the whole tick — two extra loads and a branch on every
+    // access to save a call on a few.
+    if (addr < 0x00004000)
+    {
+        u32 pc = ARM7.R[15];
+        if (pc >= 0x00004000) return false;
+        if (addr < ARM7BIOSProt && pc >= ARM7BIOSProt) return false;
+        *mem = ARM7BIOS.data();
+        *mask = ARM7BIOSSize - 1;
+        return true;
+    }
+
+    return false;
+}
+
+// The ARM9's plain-memory regions. Its I/O, palette, VRAM and OAM all
+// have side effects or per-bank routing, so only main RAM and its share
+// of the WRAM qualify — but between them they are nearly every load an
+// instruction makes that the TCMs did not already answer.
+inline bool NDS::ARM9DirectRegion(u32 addr, u8** mem, u32* mask, int* jitregion)
+{
+    if (ConsoleType != 0)
+        return false;
+
+    switch (addr & 0xFF000000)
+    {
+    case 0x02000000:
+        *mem = MainRAM;
+        *mask = MainRAMMask;
+        *jitregion = ARMJIT_Memory::memregion_MainRAM;
+        return true;
+
+    case 0x03000000:
+        if (!SWRAM_ARM9.Mem)
+            return false; // reads 0, writes are dropped: not this path's business
+        *mem = SWRAM_ARM9.Mem;
+        *mask = SWRAM_ARM9.Mask;
+        *jitregion = ARMJIT_Memory::memregion_SharedWRAM;
+        return true;
+    }
+
+    return false;
+}
+
+inline u8 ARMv4::BusRead8(u32 addr)
+{
+    const u8* mem; u32 mask;
+    if (NDS.ARM7DirectRegion(addr, &mem, &mask)) return mem[addr & mask];
+    return NDS.ARM7Read8(addr);
+}
+
+inline u16 ARMv4::BusRead16(u32 addr)
+{
+    // The alignment mask that `NDS::ARM7Read16` applies first: below
+    // 0x4000 it cannot change which side of the BIOS boundary an
+    // address falls on, so applying it early is the same read.
+    addr &= ~1;
+    const u8* mem; u32 mask;
+    if (NDS.ARM7DirectRegion(addr, &mem, &mask)) return *(const u16*)&mem[addr & mask];
+    return NDS.ARM7Read16(addr);
+}
+
+inline u32 ARMv4::BusRead32(u32 addr)
+{
+    addr &= ~3;
+    const u8* mem; u32 mask;
+    if (NDS.ARM7DirectRegion(addr, &mem, &mask)) return *(const u32*)&mem[addr & mask];
+    return NDS.ARM7Read32(addr);
+}
+
+// Stores take the same shortcut, minus the BIOS (which is not
+// writable and whose region answers `false` for a write anyway,
+// because `ARM7DirectRegion` hands back a `const` pointer). The JIT's
+// invalidation has to be repeated by hand: its region is a template
+// argument, so it cannot ride along in a runtime `(base, mask)`.
+inline void ARMv4::BusWrite8(u32 addr, u8 val)
+{
+    switch (addr & 0xFF800000)
+    {
+    case 0x02000000:
+    case 0x02800000:
+        if (NDS.ConsoleType != 0) break;
+        NDS.JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_MainRAM>(addr);
+        NDS.MainRAM[addr & NDS.MainRAMMask] = val;
+        return;
+    }
+    NDS.ARM7Write8(addr, val);
+}
+
+inline void ARMv4::BusWrite16(u32 addr, u16 val)
+{
+    addr &= ~1;
+    switch (addr & 0xFF800000)
+    {
+    case 0x02000000:
+    case 0x02800000:
+        if (NDS.ConsoleType != 0) break;
+        NDS.JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_MainRAM>(addr);
+        *(u16*)&NDS.MainRAM[addr & NDS.MainRAMMask] = val;
+        return;
+    }
+    NDS.ARM7Write16(addr, val);
+}
+
+inline void ARMv4::BusWrite32(u32 addr, u32 val)
+{
+    addr &= ~3;
+    switch (addr & 0xFF800000)
+    {
+    case 0x02000000:
+    case 0x02800000:
+        if (NDS.ConsoleType != 0) break;
+        NDS.JIT.CheckAndInvalidate<1, ARMJIT_Memory::memregion_MainRAM>(addr);
+        *(u32*)&NDS.MainRAM[addr & NDS.MainRAMMask] = val;
+        return;
+    }
+    NDS.ARM7Write32(addr, val);
+}
+
+// The ARM9's side of the same shortcut.
+inline u32 ARMv5::BusRead32(u32 addr)
+{
+    u8* mem; u32 mask; int region;
+    if (NDS.ARM9DirectRegion(addr & ~3, &mem, &mask, &region))
+        return *(u32*)&mem[(addr & ~3) & mask];
+    return NDS.ARM9Read32(addr);
+}
+
+inline u16 ARMv5::BusRead16(u32 addr)
+{
+    u8* mem; u32 mask; int region;
+    if (NDS.ARM9DirectRegion(addr & ~1, &mem, &mask, &region))
+        return *(u16*)&mem[(addr & ~1) & mask];
+    return NDS.ARM9Read16(addr);
+}
+
+inline void ARMv5::BusWrite32(u32 addr, u32 val)
+{
+    u8* mem; u32 mask; int region;
+    if (NDS.ARM9DirectRegion(addr, &mem, &mask, &region))
+    {
+        if (region == ARMJIT_Memory::memregion_MainRAM)
+            NDS.JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_MainRAM>(addr);
+        else
+            NDS.JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_SharedWRAM>(addr);
+        *(u32*)&mem[addr & mask] = val;
+        return;
+    }
+    NDS.ARM9Write32(addr, val);
+}
+
+
+// The two CPUs' data paths, moved out of CP15.cpp and ARM.cpp so an
+// instruction's load or store happens where the instruction is rather
+// than behind a call.
+
+inline void ARMv5::DataRead8(u32 addr, u32* val)
+{
+    if (!(PU_Map[addr>>12] & 0x01))
+    {
+        DataAbort();
+        return;
+    }
+
+    DataRegion = addr;
+
+    CheckWatch(addr);
+
+    if (addr < ITCMSize)
+    {
+        DataCycles = 1;
+        *val = *(u8*)&ITCM[addr & (ITCMPhysicalSize - 1)];
+        return;
+    }
+    if ((addr & DTCMMask) == DTCMBase)
+    {
+        DataCycles = 1;
+        *val = *(u8*)&DTCM[addr & (DTCMPhysicalSize - 1)];
+        return;
+    }
+
+    *val = BusRead8(addr);
+    DataCycles = MemTimings[addr >> 12][1];
+}
+
+inline void ARMv5::DataRead16(u32 addr, u32* val)
+{
+    if (!(PU_Map[addr>>12] & 0x01))
+    {
+        DataAbort();
+        return;
+    }
+
+    DataRegion = addr;
+
+    addr &= ~1;
+
+    CheckWatch(addr);
+
+    if (addr < ITCMSize)
+    {
+        DataCycles = 1;
+        *val = *(u16*)&ITCM[addr & (ITCMPhysicalSize - 1)];
+        return;
+    }
+    if ((addr & DTCMMask) == DTCMBase)
+    {
+        DataCycles = 1;
+        *val = *(u16*)&DTCM[addr & (DTCMPhysicalSize - 1)];
+        return;
+    }
+
+    *val = BusRead16(addr);
+    DataCycles = MemTimings[addr >> 12][1];
+}
+
+inline void ARMv5::DataRead32(u32 addr, u32* val)
+{
+    if (!(PU_Map[addr>>12] & 0x01))
+    {
+        DataAbort();
+        return;
+    }
+
+    DataRegion = addr;
+
+    addr &= ~3;
+
+    CheckWatch(addr);
+
+    if (addr < ITCMSize)
+    {
+        DataCycles = 1;
+        *val = *(u32*)&ITCM[addr & (ITCMPhysicalSize - 1)];
+        return;
+    }
+    if ((addr & DTCMMask) == DTCMBase)
+    {
+        DataCycles = 1;
+        *val = *(u32*)&DTCM[addr & (DTCMPhysicalSize - 1)];
+        return;
+    }
+
+    *val = BusRead32(addr);
+    DataCycles = MemTimings[addr >> 12][2];
+}
+
+inline void ARMv5::DataRead32S(u32 addr, u32* val)
+{
+    addr &= ~3;
+
+    CheckWatch(addr);
+
+    if (addr < ITCMSize)
+    {
+        DataCycles += 1;
+        *val = *(u32*)&ITCM[addr & (ITCMPhysicalSize - 1)];
+        return;
+    }
+    if ((addr & DTCMMask) == DTCMBase)
+    {
+        DataCycles += 1;
+        *val = *(u32*)&DTCM[addr & (DTCMPhysicalSize - 1)];
+        return;
+    }
+
+    *val = BusRead32(addr);
+    DataCycles += MemTimings[addr >> 12][3];
+}
+
+inline void ARMv5::DataWrite8(u32 addr, u8 val)
+{
+    if (!(PU_Map[addr>>12] & 0x02))
+    {
+        DataAbort();
+        return;
+    }
+
+    DataRegion = addr;
+
+    if (addr < ITCMSize)
+    {
+        DataCycles = 1;
+        *(u8*)&ITCM[addr & (ITCMPhysicalSize - 1)] = val;
+        NDS.JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_ITCM>(addr);
+        return;
+    }
+    if ((addr & DTCMMask) == DTCMBase)
+    {
+        DataCycles = 1;
+        *(u8*)&DTCM[addr & (DTCMPhysicalSize - 1)] = val;
+        return;
+    }
+
+    BusWrite8(addr, val);
+    DataCycles = MemTimings[addr >> 12][1];
+}
+
+inline void ARMv5::DataWrite16(u32 addr, u16 val)
+{
+    if (!(PU_Map[addr>>12] & 0x02))
+    {
+        DataAbort();
+        return;
+    }
+
+    DataRegion = addr;
+
+    addr &= ~1;
+
+    if (addr < ITCMSize)
+    {
+        DataCycles = 1;
+        *(u16*)&ITCM[addr & (ITCMPhysicalSize - 1)] = val;
+        NDS.JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_ITCM>(addr);
+        return;
+    }
+    if ((addr & DTCMMask) == DTCMBase)
+    {
+        DataCycles = 1;
+        *(u16*)&DTCM[addr & (DTCMPhysicalSize - 1)] = val;
+        return;
+    }
+
+    BusWrite16(addr, val);
+    DataCycles = MemTimings[addr >> 12][1];
+}
+
+inline void ARMv5::DataWrite32(u32 addr, u32 val)
+{
+    if (!(PU_Map[addr>>12] & 0x02))
+    {
+        DataAbort();
+        return;
+    }
+
+    DataRegion = addr;
+
+    addr &= ~3;
+
+    if (addr < ITCMSize)
+    {
+        DataCycles = 1;
+        *(u32*)&ITCM[addr & (ITCMPhysicalSize - 1)] = val;
+        NDS.JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_ITCM>(addr);
+        return;
+    }
+    if ((addr & DTCMMask) == DTCMBase)
+    {
+        DataCycles = 1;
+        *(u32*)&DTCM[addr & (DTCMPhysicalSize - 1)] = val;
+        return;
+    }
+
+    BusWrite32(addr, val);
+    DataCycles = MemTimings[addr >> 12][2];
+}
+
+inline void ARMv5::DataWrite32S(u32 addr, u32 val)
+{
+    addr &= ~3;
+
+    if (addr < ITCMSize)
+    {
+        DataCycles += 1;
+        *(u32*)&ITCM[addr & (ITCMPhysicalSize - 1)] = val;
+#ifdef JIT_ENABLED
+        NDS.JIT.CheckAndInvalidate<0, ARMJIT_Memory::memregion_ITCM>(addr);
+#endif
+        return;
+    }
+    if ((addr & DTCMMask) == DTCMBase)
+    {
+        DataCycles += 1;
+        *(u32*)&DTCM[addr & (DTCMPhysicalSize - 1)] = val;
+        return;
+    }
+
+    BusWrite32(addr, val);
+    DataCycles += MemTimings[addr >> 12][3];
+}
+
+
+inline void ARMv4::DataRead8(u32 addr, u32* val)
+{
+    CheckWatch(addr);
+
+    *val = BusRead8(addr);
+    DataRegion = addr;
+    DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
+}
+
+inline void ARMv4::DataRead16(u32 addr, u32* val)
+{
+    addr &= ~1;
+
+    CheckWatch(addr);
+
+    *val = BusRead16(addr);
+    DataRegion = addr;
+    DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
+}
+
+inline void ARMv4::DataRead32(u32 addr, u32* val)
+{
+    addr &= ~3;
+
+    CheckWatch(addr);
+
+    *val = BusRead32(addr);
+    DataRegion = addr;
+    DataCycles = NDS.ARM7MemTimings[addr >> 15][2];
+}
+
+inline void ARMv4::DataRead32S(u32 addr, u32* val)
+{
+    addr &= ~3;
+
+    CheckWatch(addr);
+
+    *val = BusRead32(addr);
+    DataCycles += NDS.ARM7MemTimings[addr >> 15][3];
+}
+
+inline void ARMv4::DataWrite8(u32 addr, u8 val)
+{
+    BusWrite8(addr, val);
+    DataRegion = addr;
+    DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
+}
+
+inline void ARMv4::DataWrite16(u32 addr, u16 val)
+{
+    addr &= ~1;
+
+    BusWrite16(addr, val);
+    DataRegion = addr;
+    DataCycles = NDS.ARM7MemTimings[addr >> 15][0];
+}
+
+inline void ARMv4::DataWrite32(u32 addr, u32 val)
+{
+    addr &= ~3;
+
+    BusWrite32(addr, val);
+    DataRegion = addr;
+    DataCycles = NDS.ARM7MemTimings[addr >> 15][2];
+}
+
+inline void ARMv4::DataWrite32S(u32 addr, u32 val)
+{
+    addr &= ~3;
+
+    BusWrite32(addr, val);
+    DataCycles += NDS.ARM7MemTimings[addr >> 15][3];
+}
+
 
 }
 #endif // NDS_H

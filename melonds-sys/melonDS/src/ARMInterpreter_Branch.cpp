@@ -17,6 +17,8 @@
 */
 
 #include "ARM.h"
+#include "NDS.h"
+#include "ARMInterpreter_Branch.h"
 #include "Platform.h"
 
 namespace melonDS::ARMInterpreter
@@ -25,34 +27,39 @@ using Platform::Log;
 using Platform::LogLevel;
 
 
-void A_B(ARM* cpu)
+template<class T> void A_B(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     s32 offset = (s32)(cpu->CurInstr << 8) >> 6;
     cpu->JumpTo(cpu->R[15] + offset);
 }
 
-void A_BL(ARM* cpu)
+template<class T> void A_BL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     s32 offset = (s32)(cpu->CurInstr << 8) >> 6;
     cpu->R[14] = cpu->R[15] - 4;
     cpu->JumpTo(cpu->R[15] + offset);
 }
 
-void A_BLX_IMM(ARM* cpu)
+template<class T> void A_BLX_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     s32 offset = (s32)(cpu->CurInstr << 8) >> 6;
     if (cpu->CurInstr & 0x01000000) offset += 2;
     cpu->R[14] = cpu->R[15] - 4;
     cpu->JumpTo(cpu->R[15] + offset + 1);
 }
 
-void A_BX(ARM* cpu)
+template<class T> void A_BX(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     cpu->JumpTo(cpu->R[cpu->CurInstr & 0xF]);
 }
 
-void A_BLX_REG(ARM* cpu)
+template<class T> void A_BLX_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 lr = cpu->R[15] - 4;
     cpu->JumpTo(cpu->R[cpu->CurInstr & 0xF]);
     cpu->R[14] = lr;
@@ -60,8 +67,9 @@ void A_BLX_REG(ARM* cpu)
 
 
 
-void T_BCOND(ARM* cpu)
+template<class T> void T_BCOND(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->CheckCondition((cpu->CurInstr >> 8) & 0xF))
     {
         s32 offset = (s32)(cpu->CurInstr << 24) >> 23;
@@ -71,13 +79,15 @@ void T_BCOND(ARM* cpu)
         cpu->AddCycles_C();
 }
 
-void T_BX(ARM* cpu)
+template<class T> void T_BX(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     cpu->JumpTo(cpu->R[(cpu->CurInstr >> 3) & 0xF]);
 }
 
-void T_BLX_REG(ARM* cpu)
+template<class T> void T_BLX_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num==1)
     {
         Log(LogLevel::Warn, "!! THUMB BLX_REG ON ARM7\n");
@@ -89,21 +99,24 @@ void T_BLX_REG(ARM* cpu)
     cpu->R[14] = lr;
 }
 
-void T_B(ARM* cpu)
+template<class T> void T_B(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     s32 offset = (s32)((cpu->CurInstr & 0x7FF) << 21) >> 20;
     cpu->JumpTo(cpu->R[15] + offset + 1);
 }
 
-void T_BL_LONG_1(ARM* cpu)
+template<class T> void T_BL_LONG_1(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     s32 offset = (s32)((cpu->CurInstr & 0x7FF) << 21) >> 9;
     cpu->R[14] = cpu->R[15] + offset;
     cpu->AddCycles_C();
 }
 
-void T_BL_LONG_2(ARM* cpu)
+template<class T> void T_BL_LONG_2(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     s32 offset = (cpu->CurInstr & 0x7FF) << 1;
     u32 pc = cpu->R[14] + offset;
 
@@ -126,6 +139,25 @@ void T_BL_LONG_2(ARM* cpu)
 }
 
 
+
+
+
+#define MELONDS_INSTANTIATE(name)        \
+    template void name<ARMv5>(ARM* cpu); \
+    template void name<ARMv4>(ARM* cpu);
+MELONDS_BRANCH_NAMES(MELONDS_INSTANTIATE)
+#undef MELONDS_INSTANTIATE
+
+#ifdef JIT_ENABLED
+#define MELONDS_DEFINE_DISPATCH(name)                       \
+    void name(ARM* cpu)                                     \
+    {                                                       \
+        if (cpu->Num == 0) name<ARMv5>(cpu);                \
+        else               name<ARMv4>(cpu);                \
+    }
+MELONDS_BRANCH_NAMES(MELONDS_DEFINE_DISPATCH)
+#undef MELONDS_DEFINE_DISPATCH
+#endif
 
 }
 

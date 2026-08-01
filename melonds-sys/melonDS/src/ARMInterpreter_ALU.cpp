@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include "ARM.h"
 #include "NDS.h"
+#include "ARMInterpreter_ALU.h"
 
 namespace melonDS::ARMInterpreter
 {
@@ -172,141 +173,168 @@ inline bool OverflowSbc(u32 a, u32 b, u32 carry)
 
 #define A_IMPLEMENT_ALU_OP(x,s) \
 \
-void A_##x##_IMM(ARM* cpu) \
+template<class T> void A_##x##_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_IMM \
     A_##x(0) \
 } \
-void A_##x##_REG_LSL_IMM(ARM* cpu) \
+template<class T> void A_##x##_REG_LSL_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(LSL_IMM) \
     A_##x(0) \
 } \
-void A_##x##_REG_LSR_IMM(ARM* cpu) \
+template<class T> void A_##x##_REG_LSR_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(LSR_IMM) \
     A_##x(0) \
 } \
-void A_##x##_REG_ASR_IMM(ARM* cpu) \
+template<class T> void A_##x##_REG_ASR_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(ASR_IMM) \
     A_##x(0) \
 } \
-void A_##x##_REG_ROR_IMM(ARM* cpu) \
+template<class T> void A_##x##_REG_ROR_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(ROR_IMM) \
     A_##x(0) \
 } \
-void A_##x##_REG_LSL_REG(ARM* cpu) \
+template<class T> void A_##x##_REG_LSL_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(LSL_REG) \
     A_##x(1) \
 } \
-void A_##x##_REG_LSR_REG(ARM* cpu) \
+template<class T> void A_##x##_REG_LSR_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(LSR_REG) \
     A_##x(1) \
 } \
-void A_##x##_REG_ASR_REG(ARM* cpu) \
+template<class T> void A_##x##_REG_ASR_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(ASR_REG) \
     A_##x(1) \
 } \
-void A_##x##_REG_ROR_REG(ARM* cpu) \
+template<class T> void A_##x##_REG_ROR_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(ROR_REG) \
     A_##x(1) \
 } \
-void A_##x##_IMM_S(ARM* cpu) \
+template<class T> void A_##x##_IMM_S(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_IMM##s \
     A_##x##_S(0) \
 } \
-void A_##x##_REG_LSL_IMM_S(ARM* cpu) \
+template<class T> void A_##x##_REG_LSL_IMM_S(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(LSL_IMM##s) \
     A_##x##_S(0) \
 } \
-void A_##x##_REG_LSR_IMM_S(ARM* cpu) \
+template<class T> void A_##x##_REG_LSR_IMM_S(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(LSR_IMM##s) \
     A_##x##_S(0) \
 } \
-void A_##x##_REG_ASR_IMM_S(ARM* cpu) \
+template<class T> void A_##x##_REG_ASR_IMM_S(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(ASR_IMM##s) \
     A_##x##_S(0) \
 } \
-void A_##x##_REG_ROR_IMM_S(ARM* cpu) \
+template<class T> void A_##x##_REG_ROR_IMM_S(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(ROR_IMM##s) \
     A_##x##_S(0) \
 } \
-void A_##x##_REG_LSL_REG_S(ARM* cpu) \
+template<class T> void A_##x##_REG_LSL_REG_S(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(LSL_REG##s) \
     A_##x##_S(1) \
 } \
-void A_##x##_REG_LSR_REG_S(ARM* cpu) \
+template<class T> void A_##x##_REG_LSR_REG_S(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(LSR_REG##s) \
     A_##x##_S(1) \
 } \
-void A_##x##_REG_ASR_REG_S(ARM* cpu) \
+template<class T> void A_##x##_REG_ASR_REG_S(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(ASR_REG##s) \
     A_##x##_S(1) \
 } \
-void A_##x##_REG_ROR_REG_S(ARM* cpu) \
+template<class T> void A_##x##_REG_ROR_REG_S(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(ROR_REG##s) \
     A_##x##_S(1) \
 }
 
 #define A_IMPLEMENT_ALU_TEST(x,s) \
 \
-void A_##x##_IMM(ARM* cpu) \
+template<class T> void A_##x##_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_IMM##s \
     A_##x(0) \
 } \
-void A_##x##_REG_LSL_IMM(ARM* cpu) \
+template<class T> void A_##x##_REG_LSL_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(LSL_IMM##s) \
     A_##x(0) \
 } \
-void A_##x##_REG_LSR_IMM(ARM* cpu) \
+template<class T> void A_##x##_REG_LSR_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(LSR_IMM##s) \
     A_##x(0) \
 } \
-void A_##x##_REG_ASR_IMM(ARM* cpu) \
+template<class T> void A_##x##_REG_ASR_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(ASR_IMM##s) \
     A_##x(0) \
 } \
-void A_##x##_REG_ROR_IMM(ARM* cpu) \
+template<class T> void A_##x##_REG_ROR_IMM(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_IMM(ROR_IMM##s) \
     A_##x(0) \
 } \
-void A_##x##_REG_LSL_REG(ARM* cpu) \
+template<class T> void A_##x##_REG_LSL_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(LSL_REG##s) \
     A_##x(1) \
 } \
-void A_##x##_REG_LSR_REG(ARM* cpu) \
+template<class T> void A_##x##_REG_LSR_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(LSR_REG##s) \
     A_##x(1) \
 } \
-void A_##x##_REG_ASR_REG(ARM* cpu) \
+template<class T> void A_##x##_REG_ASR_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(ASR_REG##s) \
     A_##x(1) \
 } \
-void A_##x##_REG_ROR_REG(ARM* cpu) \
+template<class T> void A_##x##_REG_ROR_REG(ARM* cpu_) \
 { \
+    T* cpu = static_cast<T*>(cpu_); \
     A_CALC_OP2_REG_SHIFT_REG(ROR_REG##s) \
     A_##x(1) \
 }
@@ -680,9 +708,10 @@ A_IMPLEMENT_ALU_OP(ORR,_S)
 A_IMPLEMENT_ALU_OP(MOV,_S)
 
 // debug hook
-void A_MOV_REG_LSL_IMM_DBG(ARM* cpu)
+template<class T> void A_MOV_REG_LSL_IMM_DBG(ARM* cpu_)
 {
-    A_MOV_REG_LSL_IMM(cpu);
+    T* cpu = static_cast<T*>(cpu_);
+    A_MOV_REG_LSL_IMM<T>(cpu);
 
     // nocash-style debugging hook
     if ( cpu->CurInstr == 0xE1A0C00C &&                   // mov r12, r12
@@ -759,8 +788,9 @@ A_IMPLEMENT_ALU_OP(MVN,_S)
 
 
 
-void A_MUL(ARM* cpu)
+template<class T> void A_MUL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
     u32 rs = cpu->R[(cpu->CurInstr >> 8) & 0xF];
 
@@ -788,8 +818,9 @@ void A_MUL(ARM* cpu)
     cpu->AddCycles_CI(cycles);
 }
 
-void A_MLA(ARM* cpu)
+template<class T> void A_MLA(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
     u32 rs = cpu->R[(cpu->CurInstr >> 8) & 0xF];
     u32 rn = cpu->R[(cpu->CurInstr >> 12) & 0xF];
@@ -818,8 +849,9 @@ void A_MLA(ARM* cpu)
     cpu->AddCycles_CI(cycles);
 }
 
-void A_UMULL(ARM* cpu)
+template<class T> void A_UMULL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
     u32 rs = cpu->R[(cpu->CurInstr >> 8) & 0xF];
 
@@ -848,8 +880,9 @@ void A_UMULL(ARM* cpu)
     cpu->AddCycles_CI(cycles);
 }
 
-void A_UMLAL(ARM* cpu)
+template<class T> void A_UMLAL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
     u32 rs = cpu->R[(cpu->CurInstr >> 8) & 0xF];
 
@@ -881,8 +914,9 @@ void A_UMLAL(ARM* cpu)
     cpu->AddCycles_CI(cycles);
 }
 
-void A_SMULL(ARM* cpu)
+template<class T> void A_SMULL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
     u32 rs = cpu->R[(cpu->CurInstr >> 8) & 0xF];
 
@@ -911,8 +945,9 @@ void A_SMULL(ARM* cpu)
     cpu->AddCycles_CI(cycles);
 }
 
-void A_SMLAL(ARM* cpu)
+template<class T> void A_SMLAL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
     u32 rs = cpu->R[(cpu->CurInstr >> 8) & 0xF];
 
@@ -944,8 +979,9 @@ void A_SMLAL(ARM* cpu)
     cpu->AddCycles_CI(cycles);
 }
 
-void A_SMLAxy(ARM* cpu)
+template<class T> void A_SMLAxy(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return;
 
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
@@ -967,8 +1003,9 @@ void A_SMLAxy(ARM* cpu)
     cpu->AddCycles_C(); // TODO: interlock??
 }
 
-void A_SMLAWy(ARM* cpu)
+template<class T> void A_SMLAWy(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return;
 
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
@@ -988,8 +1025,9 @@ void A_SMLAWy(ARM* cpu)
     cpu->AddCycles_C(); // TODO: interlock??
 }
 
-void A_SMULxy(ARM* cpu)
+template<class T> void A_SMULxy(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return;
 
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
@@ -1006,8 +1044,9 @@ void A_SMULxy(ARM* cpu)
     cpu->AddCycles_C(); // TODO: interlock??
 }
 
-void A_SMULWy(ARM* cpu)
+template<class T> void A_SMULWy(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return;
 
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
@@ -1022,8 +1061,9 @@ void A_SMULWy(ARM* cpu)
     cpu->AddCycles_C(); // TODO: interlock??
 }
 
-void A_SMLALxy(ARM* cpu)
+template<class T> void A_SMLALxy(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return;
 
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
@@ -1047,8 +1087,9 @@ void A_SMLALxy(ARM* cpu)
 
 
 
-void A_CLZ(ARM* cpu)
+template<class T> void A_CLZ(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return A_UNK(cpu);
 
     u32 val = cpu->R[cpu->CurInstr & 0xF];
@@ -1071,8 +1112,9 @@ void A_CLZ(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void A_QADD(ARM* cpu)
+template<class T> void A_QADD(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return A_UNK(cpu);
 
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
@@ -1089,8 +1131,9 @@ void A_QADD(ARM* cpu)
     cpu->AddCycles_C(); // TODO: interlock??
 }
 
-void A_QSUB(ARM* cpu)
+template<class T> void A_QSUB(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return A_UNK(cpu);
 
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
@@ -1107,8 +1150,9 @@ void A_QSUB(ARM* cpu)
     cpu->AddCycles_C(); // TODO: interlock??
 }
 
-void A_QDADD(ARM* cpu)
+template<class T> void A_QDADD(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return A_UNK(cpu);
 
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
@@ -1133,8 +1177,9 @@ void A_QDADD(ARM* cpu)
     cpu->AddCycles_C(); // TODO: interlock??
 }
 
-void A_QDSUB(ARM* cpu)
+template<class T> void A_QDSUB(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     if (cpu->Num != 0) return A_UNK(cpu);
 
     u32 rm = cpu->R[cpu->CurInstr & 0xF];
@@ -1165,8 +1210,9 @@ void A_QDSUB(ARM* cpu)
 
 
 
-void T_LSL_IMM(ARM* cpu)
+template<class T> void T_LSL_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 op = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 s = (cpu->CurInstr >> 6) & 0x1F;
     LSL_IMM_S(op, s);
@@ -1176,8 +1222,9 @@ void T_LSL_IMM(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_LSR_IMM(ARM* cpu)
+template<class T> void T_LSR_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 op = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 s = (cpu->CurInstr >> 6) & 0x1F;
     LSR_IMM_S(op, s);
@@ -1187,8 +1234,9 @@ void T_LSR_IMM(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_ASR_IMM(ARM* cpu)
+template<class T> void T_ASR_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 op = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 s = (cpu->CurInstr >> 6) & 0x1F;
     ASR_IMM_S(op, s);
@@ -1198,8 +1246,9 @@ void T_ASR_IMM(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_ADD_REG_(ARM* cpu)
+template<class T> void T_ADD_REG_(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 6) & 0x7];
     u32 res = a + b;
@@ -1211,8 +1260,9 @@ void T_ADD_REG_(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_SUB_REG_(ARM* cpu)
+template<class T> void T_SUB_REG_(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 6) & 0x7];
     u32 res = a - b;
@@ -1224,8 +1274,9 @@ void T_SUB_REG_(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_ADD_IMM_(ARM* cpu)
+template<class T> void T_ADD_IMM_(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 b = (cpu->CurInstr >> 6) & 0x7;
     u32 res = a + b;
@@ -1237,8 +1288,9 @@ void T_ADD_IMM_(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_SUB_IMM_(ARM* cpu)
+template<class T> void T_SUB_IMM_(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 b = (cpu->CurInstr >> 6) & 0x7;
     u32 res = a - b;
@@ -1250,8 +1302,9 @@ void T_SUB_IMM_(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_MOV_IMM(ARM* cpu)
+template<class T> void T_MOV_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 b = cpu->CurInstr & 0xFF;
     cpu->R[(cpu->CurInstr >> 8) & 0x7] = b;
     cpu->SetNZ(0,
@@ -1259,8 +1312,9 @@ void T_MOV_IMM(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_CMP_IMM(ARM* cpu)
+template<class T> void T_CMP_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[(cpu->CurInstr >> 8) & 0x7];
     u32 b = cpu->CurInstr & 0xFF;
     u32 res = a - b;
@@ -1271,8 +1325,9 @@ void T_CMP_IMM(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_ADD_IMM(ARM* cpu)
+template<class T> void T_ADD_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[(cpu->CurInstr >> 8) & 0x7];
     u32 b = cpu->CurInstr & 0xFF;
     u32 res = a + b;
@@ -1284,8 +1339,9 @@ void T_ADD_IMM(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_SUB_IMM(ARM* cpu)
+template<class T> void T_SUB_IMM(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[(cpu->CurInstr >> 8) & 0x7];
     u32 b = cpu->CurInstr & 0xFF;
     u32 res = a - b;
@@ -1298,8 +1354,9 @@ void T_SUB_IMM(ARM* cpu)
 }
 
 
-void T_AND_REG(ARM* cpu)
+template<class T> void T_AND_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = a & b;
@@ -1309,8 +1366,9 @@ void T_AND_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_EOR_REG(ARM* cpu)
+template<class T> void T_EOR_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = a ^ b;
@@ -1320,8 +1378,9 @@ void T_EOR_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_LSL_REG(ARM* cpu)
+template<class T> void T_LSL_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7] & 0xFF;
     LSL_REG_S(a, b);
@@ -1331,8 +1390,9 @@ void T_LSL_REG(ARM* cpu)
     cpu->AddCycles_CI(1);
 }
 
-void T_LSR_REG(ARM* cpu)
+template<class T> void T_LSR_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7] & 0xFF;
     LSR_REG_S(a, b);
@@ -1342,8 +1402,9 @@ void T_LSR_REG(ARM* cpu)
     cpu->AddCycles_CI(1);
 }
 
-void T_ASR_REG(ARM* cpu)
+template<class T> void T_ASR_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7] & 0xFF;
     ASR_REG_S(a, b);
@@ -1353,8 +1414,9 @@ void T_ASR_REG(ARM* cpu)
     cpu->AddCycles_CI(1);
 }
 
-void T_ADC_REG(ARM* cpu)
+template<class T> void T_ADC_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res_tmp = a + b;
@@ -1368,8 +1430,9 @@ void T_ADC_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_SBC_REG(ARM* cpu)
+template<class T> void T_SBC_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res_tmp = a - b;
@@ -1383,8 +1446,9 @@ void T_SBC_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_ROR_REG(ARM* cpu)
+template<class T> void T_ROR_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7] & 0xFF;
     ROR_REG_S(a, b);
@@ -1394,8 +1458,9 @@ void T_ROR_REG(ARM* cpu)
     cpu->AddCycles_CI(1);
 }
 
-void T_TST_REG(ARM* cpu)
+template<class T> void T_TST_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = a & b;
@@ -1404,8 +1469,9 @@ void T_TST_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_NEG_REG(ARM* cpu)
+template<class T> void T_NEG_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = -b;
     cpu->R[cpu->CurInstr & 0x7] = res;
@@ -1416,8 +1482,9 @@ void T_NEG_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_CMP_REG(ARM* cpu)
+template<class T> void T_CMP_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = a - b;
@@ -1428,8 +1495,9 @@ void T_CMP_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_CMN_REG(ARM* cpu)
+template<class T> void T_CMN_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = a + b;
@@ -1440,8 +1508,9 @@ void T_CMN_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_ORR_REG(ARM* cpu)
+template<class T> void T_ORR_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = a | b;
@@ -1451,8 +1520,9 @@ void T_ORR_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_MUL_REG(ARM* cpu)
+template<class T> void T_MUL_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = a * b;
@@ -1476,8 +1546,9 @@ void T_MUL_REG(ARM* cpu)
     cpu->AddCycles_CI(cycles);
 }
 
-void T_BIC_REG(ARM* cpu)
+template<class T> void T_BIC_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 a = cpu->R[cpu->CurInstr & 0x7];
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = a & ~b;
@@ -1487,8 +1558,9 @@ void T_BIC_REG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_MVN_REG(ARM* cpu)
+template<class T> void T_MVN_REG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 b = cpu->R[(cpu->CurInstr >> 3) & 0x7];
     u32 res = ~b;
     cpu->R[cpu->CurInstr & 0x7] = res;
@@ -1501,8 +1573,9 @@ void T_MVN_REG(ARM* cpu)
 // TODO: check those when MSBs and MSBd are cleared
 // GBAtek says it's not allowed, but it works atleast on the ARM9
 
-void T_ADD_HIREG(ARM* cpu)
+template<class T> void T_ADD_HIREG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 rd = (cpu->CurInstr & 0x7) | ((cpu->CurInstr >> 4) & 0x8);
     u32 rs = (cpu->CurInstr >> 3) & 0xF;
 
@@ -1521,8 +1594,9 @@ void T_ADD_HIREG(ARM* cpu)
     }
 }
 
-void T_CMP_HIREG(ARM* cpu)
+template<class T> void T_CMP_HIREG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 rd = (cpu->CurInstr & 0x7) | ((cpu->CurInstr >> 4) & 0x8);
     u32 rs = (cpu->CurInstr >> 3) & 0xF;
 
@@ -1537,8 +1611,9 @@ void T_CMP_HIREG(ARM* cpu)
     cpu->AddCycles_C();
 }
 
-void T_MOV_HIREG(ARM* cpu)
+template<class T> void T_MOV_HIREG(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 rd = (cpu->CurInstr & 0x7) | ((cpu->CurInstr >> 4) & 0x8);
     u32 rs = (cpu->CurInstr >> 3) & 0xF;
 
@@ -1567,24 +1642,27 @@ void T_MOV_HIREG(ARM* cpu)
 }
 
 
-void T_ADD_PCREL(ARM* cpu)
+template<class T> void T_ADD_PCREL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 val = cpu->R[15] & ~2;
     val += ((cpu->CurInstr & 0xFF) << 2);
     cpu->R[(cpu->CurInstr >> 8) & 0x7] = val;
     cpu->AddCycles_C();
 }
 
-void T_ADD_SPREL(ARM* cpu)
+template<class T> void T_ADD_SPREL(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 val = cpu->R[13];
     val += ((cpu->CurInstr & 0xFF) << 2);
     cpu->R[(cpu->CurInstr >> 8) & 0x7] = val;
     cpu->AddCycles_C();
 }
 
-void T_ADD_SP(ARM* cpu)
+template<class T> void T_ADD_SP(ARM* cpu_)
 {
+    T* cpu = static_cast<T*>(cpu_);
     u32 val = cpu->R[13];
     if (cpu->CurInstr & (1<<7))
         val -= ((cpu->CurInstr & 0x7F) << 2);
@@ -1594,5 +1672,24 @@ void T_ADD_SP(ARM* cpu)
     cpu->AddCycles_C();
 }
 
+
+
+
+#define MELONDS_INSTANTIATE(name)        \
+    template void name<ARMv5>(ARM* cpu); \
+    template void name<ARMv4>(ARM* cpu);
+MELONDS_ALU_NAMES(MELONDS_INSTANTIATE)
+#undef MELONDS_INSTANTIATE
+
+#ifdef JIT_ENABLED
+#define MELONDS_DEFINE_DISPATCH(name)                       \
+    void name(ARM* cpu)                                     \
+    {                                                       \
+        if (cpu->Num == 0) name<ARMv5>(cpu);                \
+        else               name<ARMv4>(cpu);                \
+    }
+MELONDS_ALU_NAMES(MELONDS_DEFINE_DISPATCH)
+#undef MELONDS_DEFINE_DISPATCH
+#endif
 
 }

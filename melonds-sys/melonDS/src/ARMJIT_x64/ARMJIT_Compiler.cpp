@@ -766,7 +766,7 @@ JitBlockEntry Compiler::CompileBlock(ARM* cpu, bool thumb, FetchedInstr instrs[]
                 else
                 {
                     MOV(64, R(ABI_PARAM1), R(RCPU));
-                    ABI_CallFunction(ARMInterpreter::A_BLX_IMM);
+                    ABI_CallFunction(static_cast<void (*)(ARM*)>(ARMInterpreter::A_BLX_IMM));
                 }
             }
             else if (cond == 0xF)

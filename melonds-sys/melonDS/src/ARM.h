@@ -37,6 +37,12 @@ inline u32 ROR(u32 x, u32 n)
     return (x >> (n&0x1F)) | (x << ((32-n)&0x1F));
 }
 
+// What a cached code/data access is charged when the instruction cache
+// is not emulated. (Was file-static in CP15.cpp; CodeRead32 reads it
+// and now lives in this header.)
+const int kDataCacheTiming = 3;//2;
+const int kCodeCacheTiming = 3;//5;
+
 enum
 {
     RWFlags_Nonseq = (1<<5),
@@ -76,7 +82,16 @@ public:
 
     virtual void FillPipeline() = 0;
 
-    virtual void JumpTo(u32 addr, bool restorecpsr = false) = 0;
+    // Not virtual, and not for want of two implementations: `Num`
+    // names the concrete class as surely as the vptr does — 0 is
+    // always the ARMv5, 1 always the ARMv4 — and this and the memory
+    // interface below run once or more per interpreted instruction.
+    // Branching on a byte the caller already has in cache beats
+    // loading a vptr and calling through it, and leaves the callee
+    // somewhere the compiler can inline it from. Defined at the end of
+    // NDS.h, where both CPU classes and the bus they read are
+    // complete.
+    void JumpTo(u32 addr, bool restorecpsr = false);
     void RestoreCPSR();
 
     void Halt(u32 halt)
@@ -205,19 +220,23 @@ public:
     }
 
 
-    virtual void DataRead8(u32 addr, u32* val) = 0;
-    virtual void DataRead16(u32 addr, u32* val) = 0;
-    virtual void DataRead32(u32 addr, u32* val) = 0;
-    virtual void DataRead32S(u32 addr, u32* val) = 0;
-    virtual void DataWrite8(u32 addr, u8 val) = 0;
-    virtual void DataWrite16(u32 addr, u16 val) = 0;
-    virtual void DataWrite32(u32 addr, u32 val) = 0;
-    virtual void DataWrite32S(u32 addr, u32 val) = 0;
+    // See JumpTo above: dispatched on Num, defined at the end of NDS.h.
+    // Inline, defined at the end of NDS.h: a load or a store is what
+    // most instructions are for, and these are two or three branches
+    // over a pointer the caller already has.
+    inline void DataRead8(u32 addr, u32* val);
+    inline void DataRead16(u32 addr, u32* val);
+    inline void DataRead32(u32 addr, u32* val);
+    inline void DataRead32S(u32 addr, u32* val);
+    inline void DataWrite8(u32 addr, u8 val);
+    inline void DataWrite16(u32 addr, u16 val);
+    inline void DataWrite32(u32 addr, u32 val);
+    inline void DataWrite32S(u32 addr, u32 val);
 
-    virtual void AddCycles_C() = 0;
-    virtual void AddCycles_CI(s32 numI) = 0;
-    virtual void AddCycles_CDI() = 0;
-    virtual void AddCycles_CD() = 0;
+    void AddCycles_C();
+    void AddCycles_CI(s32 numI);
+    void AddCycles_CDI();
+    void AddCycles_CD();
 
     void CheckGdbIncoming();
 
@@ -310,7 +329,7 @@ protected:
     void GdbCheckC();
 };
 
-class ARMv5 : public ARM
+class ARMv5 final : public ARM
 {
 public:
     ARMv5(melonDS::NDS& nds, std::optional<GDBArgs> gdb, bool jit);
@@ -324,7 +343,7 @@ public:
 
     void FillPipeline() override;
 
-    void JumpTo(u32 addr, bool restorecpsr = false) override;
+    void JumpTo(u32 addr, bool restorecpsr = false);
 
     void PrefetchAbort();
     void DataAbort();
@@ -333,32 +352,61 @@ public:
     void Execute();
 
     // all code accesses are forced nonseq 32bit
-    u32 CodeRead32(u32 addr, bool branch);
+    //
+    // Inline, and here rather than in CP15.cpp, because the pipeline
+    // refills through it once per instruction: three predictable
+    // branches and a load, against a call the caller cannot see into.
+    u32 CodeRead32(u32 addr, bool branch)
+    {
+        if (addr < ITCMSize)
+        {
+            CodeCycles = 1;
+            return *(u32*)&ITCM[addr & (ITCMPhysicalSize - 1)];
+        }
 
-    void DataRead8(u32 addr, u32* val) override;
-    void DataRead16(u32 addr, u32* val) override;
-    void DataRead32(u32 addr, u32* val) override;
-    void DataRead32S(u32 addr, u32* val) override;
-    void DataWrite8(u32 addr, u8 val) override;
-    void DataWrite16(u32 addr, u16 val) override;
-    void DataWrite32(u32 addr, u32 val) override;
-    void DataWrite32S(u32 addr, u32 val) override;
+        CodeCycles = RegionCodeCycles;
+        if (CodeCycles == 0xFF) // cached memory. hax
+        {
+            if (branch || !(addr & 0x1F))
+                CodeCycles = kCodeCacheTiming;//ICacheLookup(addr);
+            else
+                CodeCycles = 1;
 
-    void AddCycles_C() override
+            //return *(u32*)&CurICacheLine[addr & 0x1C];
+        }
+
+        if (CodeMem.Mem) return *(u32*)&CodeMem.Mem[addr & CodeMem.Mask];
+
+        return BusRead32(addr);
+    }
+
+    // Inline, defined at the end of NDS.h: a load or a store is what
+    // most instructions are for, and these are two or three branches
+    // over a pointer the caller already has.
+    inline void DataRead8(u32 addr, u32* val);
+    inline void DataRead16(u32 addr, u32* val);
+    inline void DataRead32(u32 addr, u32* val);
+    inline void DataRead32S(u32 addr, u32* val);
+    inline void DataWrite8(u32 addr, u8 val);
+    inline void DataWrite16(u32 addr, u16 val);
+    inline void DataWrite32(u32 addr, u32 val);
+    inline void DataWrite32S(u32 addr, u32 val);
+
+    void AddCycles_C()
     {
         // code only. always nonseq 32-bit for ARM9.
         s32 numC = (R[15] & 0x2) ? 0 : CodeCycles;
         Cycles += numC;
     }
 
-    void AddCycles_CI(s32 numI) override
+    void AddCycles_CI(s32 numI)
     {
         // code+internal
         s32 numC = (R[15] & 0x2) ? 0 : CodeCycles;
         Cycles += numC + numI;
     }
 
-    void AddCycles_CDI() override
+    void AddCycles_CDI()
     {
         // LDR/LDM cycles. ARM9 seems to skip the internal cycle there.
         // TODO: ITCM data fetches shouldn't be parallelized, they say
@@ -371,7 +419,7 @@ public:
         //    Cycles += numC + numD;
     }
 
-    void AddCycles_CD() override
+    void AddCycles_CD()
     {
         // TODO: ITCM data fetches shouldn't be parallelized, they say
         s32 numC = (R[15] & 0x2) ? 0 : CodeCycles;
@@ -461,14 +509,14 @@ protected:
     void BusWrite32(u32 addr, u32 val) override;
 };
 
-class ARMv4 : public ARM
+class ARMv4 final : public ARM
 {
 public:
     ARMv4(melonDS::NDS& nds, std::optional<GDBArgs> gdb, bool jit);
 
     void FillPipeline() override;
 
-    void JumpTo(u32 addr, bool restorecpsr = false) override;
+    void JumpTo(u32 addr, bool restorecpsr = false);
 
     template <CPUExecuteMode mode>
     void Execute();
@@ -482,19 +530,23 @@ public:
     {
         return BusRead32(addr);
     }
-
-    void DataRead8(u32 addr, u32* val) override;
-    void DataRead16(u32 addr, u32* val) override;
-    void DataRead32(u32 addr, u32* val) override;
-    void DataRead32S(u32 addr, u32* val) override;
-    void DataWrite8(u32 addr, u8 val) override;
-    void DataWrite16(u32 addr, u16 val) override;
-    void DataWrite32(u32 addr, u32 val) override;
-    void DataWrite32S(u32 addr, u32 val) override;
-    void AddCycles_C() override;
-    void AddCycles_CI(s32 num) override;
-    void AddCycles_CDI() override;
-    void AddCycles_CD() override;
+    // Inline, defined at the end of NDS.h: a load or a store is what
+    // most instructions are for, and these are two or three branches
+    // over a pointer the caller already has.
+    inline void DataRead8(u32 addr, u32* val);
+    inline void DataRead16(u32 addr, u32* val);
+    inline void DataRead32(u32 addr, u32* val);
+    inline void DataRead32S(u32 addr, u32* val);
+    inline void DataWrite8(u32 addr, u8 val);
+    inline void DataWrite16(u32 addr, u16 val);
+    inline void DataWrite32(u32 addr, u32 val);
+    inline void DataWrite32S(u32 addr, u32 val);
+    // Defined at the end of NDS.h: they index the ARM7's timing table,
+    // which lives in the NDS, and they run once per instruction.
+    inline void AddCycles_C();
+    inline void AddCycles_CI(s32 num);
+    inline void AddCycles_CDI();
+    inline void AddCycles_CD();
 protected:
     u8 BusRead8(u32 addr) override;
     u16 BusRead16(u32 addr) override;

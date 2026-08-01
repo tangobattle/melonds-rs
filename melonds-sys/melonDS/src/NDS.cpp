@@ -906,17 +906,14 @@ u64 NDS::NextTarget()
 {
     u64 minEvent = UINT64_MAX;
 
-    u32 mask = SchedListMask;
-    for (int i = 0; i < Event_MAX; i++)
+    // Walk the scheduled events, not the slots they could be in: half a
+    // dozen of the twenty-five are ever live on a DS, and this runs
+    // twice per CPU slice — a couple of thousand times a frame.
+    for (u32 mask = SchedListMask; mask; mask &= mask - 1)
     {
-        if (!mask) break;
-        if (mask & 0x1)
-        {
-            if (SchedList[i].Timestamp < minEvent)
-                minEvent = SchedList[i].Timestamp;
-        }
-
-        mask >>= 1;
+        u32 i = __builtin_ctz(mask);
+        if (SchedList[i].Timestamp < minEvent)
+            minEvent = SchedList[i].Timestamp;
     }
 
     u64 max = SysTimestamp + kMaxIterationCycles;
@@ -931,24 +928,21 @@ void NDS::RunSystem(u64 timestamp)
 {
     SysTimestamp = timestamp;
 
-    u32 mask = SchedListMask;
-    for (int i = 0; i < Event_MAX; i++)
+    // See NextTarget: iterate the live events. A handler may schedule
+    // more, and did not have them run in the same pass before either —
+    // `mask` was read once up front there too.
+    for (u32 mask = SchedListMask; mask; mask &= mask - 1)
     {
-        if (!mask) break;
-        if (mask & 0x1)
+        u32 i = __builtin_ctz(mask);
+        SchedEvent& evt = SchedList[i];
+
+        if (evt.Timestamp <= SysTimestamp)
         {
-            SchedEvent& evt = SchedList[i];
+            SchedListMask &= ~(1<<i);
 
-            if (evt.Timestamp <= SysTimestamp)
-            {
-                SchedListMask &= ~(1<<i);
-
-                EventFunc func = evt.Funcs[evt.FuncID];
-                func(evt.That, evt.Param);
-            }
+            EventFunc func = evt.Funcs[evt.FuncID];
+            func(evt.That, evt.Param);
         }
-
-        mask >>= 1;
     }
 }
 

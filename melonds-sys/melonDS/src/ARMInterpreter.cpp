@@ -290,8 +290,46 @@ void T_SVC(ARM* cpu)
 
 
 
+// The instruction tables, one set per CPU.
+//
+// Both are the same list of handlers, read out of ARM_InstrTable.h; the
+// only difference is which instantiation of the load/store family the
+// names resolve to. Inside `V5` the aliases below are found first, and
+// everything they do not name falls through to the one shared handler
+// in the enclosing namespace — so an instruction that never touches
+// memory still exists exactly once.
+
+namespace V5
+{
+#define MELONDS_BIND(name) constexpr auto name = &ARMInterpreter::name<ARMv5>;
+MELONDS_LOADSTORE_NAMES(MELONDS_BIND)
+MELONDS_BRANCH_NAMES(MELONDS_BIND)
+MELONDS_ALU_NAMES(MELONDS_BIND)
+#undef MELONDS_BIND
+
+#define INSTRFUNC_PROTO(x)  void (*const x)(ARM* cpu)
+#include "ARM_InstrTable.h"
+#undef INSTRFUNC_PROTO
+}
+
+namespace V4
+{
+#define MELONDS_BIND(name) constexpr auto name = &ARMInterpreter::name<ARMv4>;
+MELONDS_LOADSTORE_NAMES(MELONDS_BIND)
+MELONDS_BRANCH_NAMES(MELONDS_BIND)
+MELONDS_ALU_NAMES(MELONDS_BIND)
+#undef MELONDS_BIND
+
+#define INSTRFUNC_PROTO(x)  void (*const x)(ARM* cpu)
+#include "ARM_InstrTable.h"
+#undef INSTRFUNC_PROTO
+}
+
+#ifdef JIT_ENABLED
+// The JIT's fallback table, built from the dispatching forms.
 #define INSTRFUNC_PROTO(x)  void (*x)(ARM* cpu)
 #include "ARM_InstrTable.h"
 #undef INSTRFUNC_PROTO
+#endif
 
 }

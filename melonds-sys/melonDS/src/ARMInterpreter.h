@@ -27,8 +27,24 @@ namespace melonDS
 namespace ARMInterpreter
 {
 
+// One instruction table per CPU; see ARMInterpreter.cpp. ARMv5::Execute
+// and ARMv4::Execute dispatch through their own, which is what lets a
+// load or a store reach memory without asking which CPU it is on.
+namespace V5
+{
+extern void (*const ARMInstrTable[4096])(ARM* cpu);
+extern void (*const THUMBInstrTable[1024])(ARM* cpu);
+}
+namespace V4
+{
+extern void (*const ARMInstrTable[4096])(ARM* cpu);
+extern void (*const THUMBInstrTable[1024])(ARM* cpu);
+}
+
+#ifdef JIT_ENABLED
 extern void (*ARMInstrTable[4096])(ARM* cpu);
 extern void (*THUMBInstrTable[1024])(ARM* cpu);
+#endif
 
 void A_MSR_IMM(ARM* cpu);
 void A_MSR_REG(ARM* cpu);
@@ -39,7 +55,15 @@ void A_SVC(ARM* cpu);
 
 void T_SVC(ARM* cpu);
 
-void A_BLX_IMM(ARM* cpu); // I'm a special one look at me
+// I'm a special one look at me — the interpreter reaches for this
+// directly, outside the tables, for the unconditional BLX the
+// condition field of an ARM instruction otherwise names. Templated
+// with the rest of the branch family (ARMInterpreter_Branch.h).
+template<class T> void A_BLX_IMM(ARM* cpu);
+
+#ifdef JIT_ENABLED
+void A_BLX_IMM(ARM* cpu);
+#endif
 
 }
 
