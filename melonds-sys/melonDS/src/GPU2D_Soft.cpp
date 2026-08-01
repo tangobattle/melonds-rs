@@ -327,18 +327,10 @@ void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
     bool has3d = (GPU2D.Num == 0) && (GPU2D.DispCnt & 0x8) && (GPU2D.LayerEnable & 0x1);
     bool identity = CompositeIsIdentity(GPU2D.BlendCnt, SpriteBlendOnLine, has3d);
 
-    u64 backdrop;
-    if (GPU2D.Num)
-        backdrop = *(u16*)&GPU.Palette[0x400];
-    else
-        backdrop = *(u16*)&GPU.Palette[0];
+    u64 backdrop = GPU.PaletteRGB[GPU2D.Num ? 0x200 : 0];
 
     {
-        u8 r = (backdrop & 0x001F) << 1;
-        u8 g = ((backdrop & 0x03E0) >> 4) | ((backdrop & 0x8000) >> 15);
-        u8 b = (backdrop & 0x7C00) >> 9;
-
-        backdrop = r | (g << 8) | (b << 16) | 0x20000000;
+        backdrop |= 0x20000000;
         backdrop |= (backdrop << 32);
 
         for (int i = 0; i < 256; i+=2)
@@ -348,7 +340,10 @@ void SoftRenderer2D::DrawScanline_BGOBJ(u32 line, u32* dst)
                 *(u64*)&BGOBJLine[i] = 0;
     }
 
-    if (GPU2D.DispCnt & 0xE000)
+    CompositeIdentity = identity;
+    WindowsIdle = !(GPU2D.DispCnt & 0xE000);
+
+    if (!WindowsIdle)
         GPU2D.CalculateWindowMask(WindowMask, OBJWindow);
     else
         memset(WindowMask, 0xFF, 256);
@@ -597,7 +592,6 @@ void SoftRenderer2D::DrawBG_Text_Fast(u32 line, u32 bgnum)
     u16 bgcnt = GPU2D.BGCnt[bgnum];
 
     u32 tilesetaddr, tilemapaddr;
-    u16* pal;
     u32 extpal, extpalslot;
 
     u16 xoff = GPU2D.BGXPos[bgnum];
@@ -618,19 +612,23 @@ void SoftRenderer2D::DrawBG_Text_Fast(u32 line, u32 bgnum)
     u8* bgvram;
     u32 bgvrammask;
     GPU2D.GetBGVRAM(bgvram, bgvrammask);
+    // The standard palette, already in pixel format. Extended palettes
+    // live in VRAM and are far too large to keep expanded, so those
+    // still take a colour apart per pixel.
+    const u32* pal32;
     if (GPU2D.Num)
     {
         tilesetaddr = ((bgcnt & 0x003C) << 12);
         tilemapaddr = ((bgcnt & 0x1F00) << 3);
 
-        pal = (u16*)&GPU.Palette[0x400];
+        pal32 = &GPU.PaletteRGB[0x200];
     }
     else
     {
         tilesetaddr = ((GPU2D.DispCnt & 0x07000000) >> 8) + ((bgcnt & 0x003C) << 12);
         tilemapaddr = ((GPU2D.DispCnt & 0x38000000) >> 11) + ((bgcnt & 0x1F00) << 3);
 
-        pal = (u16*)&GPU.Palette[0];
+        pal32 = &GPU.PaletteRGB[0];
     }
 
     // adjust Y position in tilemap
@@ -646,6 +644,10 @@ void SoftRenderer2D::DrawBG_Text_Fast(u32 line, u32 bgnum)
     u32 yrow = yoff & 0x7;
     u32 flag = 0x01000000 << bgnum;
     u8 winbit = 1 << bgnum;
+    // Both loop-invariant for the whole line; the pixel loops below are
+    // small enough that the compiler unswitches on them.
+    const bool pushdown = !CompositeIdentity;
+    const bool anywin = !WindowsIdle;
 
     if (bgcnt & (1<<7))
     {
@@ -673,9 +675,7 @@ void SoftRenderer2D::DrawBG_Text_Fast(u32 line, u32 bgnum)
             if (curtile & (1<<10)) // xflip
                 row = __builtin_bswap64(row);
 
-            u16* curpal;
-            if (extpal) curpal = GPU2D.GetBGExtPal(extpalslot, curtile>>12);
-            else        curpal = pal;
+            const u16* curpal = extpal ? GPU2D.GetBGExtPal(extpalslot, curtile>>12) : nullptr;
 
             row >>= (tx << 3);
             u32* first = &BGOBJLine[i];
@@ -683,12 +683,10 @@ void SoftRenderer2D::DrawBG_Text_Fast(u32 line, u32 bgnum)
             for (int k = 0; k < len; k++, row >>= 8)
             {
                 u8 color = (u8)row;
-                bool draw = color && (WindowMask[i+k] & winbit);
-                u16 c = curpal[color];
-                u32 nf = ((c & 0x001F) << 1) | (((c & 0x03E0) >> 4) << 8)
-                       | ((c & 0x8000) ? 0x100 : 0) | (((c & 0x7C00) >> 9) << 16) | flag;
+                bool draw = color && (!anywin || (WindowMask[i+k] & winbit));
+                u32 nf = (extpal ? GPU::ExpandBGR555(curpal[color]) : pal32[color]) | flag;
                 u32 f = first[k];
-                second[k] = draw ? f : second[k];
+                if (pushdown) second[k] = draw ? f : second[k];
                 first[k] = draw ? nf : f;
             }
             i += len;
@@ -721,7 +719,7 @@ void SoftRenderer2D::DrawBG_Text_Fast(u32 line, u32 bgnum)
                 row = ((row & 0x0F0F0F0F) << 4) | ((row >> 4) & 0x0F0F0F0F);
             }
 
-            u16* curpal = pal + ((curtile & 0xF000) >> 8);
+            const u32* curpal = pal32 + ((curtile & 0xF000) >> 8);
 
             row >>= (tx << 2);
             u32* first = &BGOBJLine[i];
@@ -729,12 +727,10 @@ void SoftRenderer2D::DrawBG_Text_Fast(u32 line, u32 bgnum)
             for (int k = 0; k < len; k++, row >>= 4)
             {
                 u8 color = row & 0xF;
-                bool draw = color && (WindowMask[i+k] & winbit);
-                u16 c = curpal[color];
-                u32 nf = ((c & 0x001F) << 1) | (((c & 0x03E0) >> 4) << 8)
-                       | ((c & 0x8000) ? 0x100 : 0) | (((c & 0x7C00) >> 9) << 16) | flag;
+                bool draw = color && (!anywin || (WindowMask[i+k] & winbit));
+                u32 nf = curpal[color] | flag;
                 u32 f = first[k];
-                second[k] = draw ? f : second[k];
+                if (pushdown) second[k] = draw ? f : second[k];
                 first[k] = draw ? nf : f;
             }
             i += len;
@@ -1174,7 +1170,9 @@ void SoftRenderer2D::ApplySpriteMosaicX()
 void SoftRenderer2D::InterleaveSprites(u32 prio)
 {
     u32 attrmask = (prio << 16) | OBJ_IsOpaque;
-    u16* pal = (u16*)&GPU.Palette[GPU2D.Num ? 0x600 : 0x200];
+    // Sprite palettes sit above the BG ones: entries 0x100 and 0x300 of
+    // the expanded mirror are Palette 0x200 and 0x600.
+    const u32* pal32 = &GPU.PaletteRGB[GPU2D.Num ? 0x300 : 0x100];
     u16* extpal = GPU2D.GetOBJExtPal();
 
     for (s32 i = SpriteXMin; i < SpriteXMax; i++)
@@ -1184,17 +1182,19 @@ void SoftRenderer2D::InterleaveSprites(u32 prio)
         if (!(WindowMask[i] & 0x10))
             continue;
 
-        u16 color;
+        u32 rgb;
         u32 pixel = OBJLine[i];
 
         if (pixel & OBJ_DirectColor)
-            color = pixel & 0x7FFF;
+            rgb = GPU::ExpandBGR555(pixel & 0x7FFF);
         else if (pixel & OBJ_StandardPal)
-            color = pal[pixel & 0xFF];
+            rgb = pal32[pixel & 0xFF];
         else
-            color = extpal[pixel & 0xFFF];
+            rgb = GPU::ExpandBGR555(extpal[pixel & 0xFFF]);
 
-        DrawPixel(&BGOBJLine[i], color, pixel & 0xFF000000);
+        u32* dst = &BGOBJLine[i];
+        *(dst+256) = *dst;
+        *dst = rgb | (pixel & 0xFF000000);
     }
 }
 

@@ -71,6 +71,16 @@ private:
     // only walks this window, everything outside it is provably clear.
     s32 SpriteXMin, SpriteXMax;
 
+    // Set for the line when no colour effect can fire (see
+    // CompositeIsIdentity). The composite is then a copy of the top
+    // layer, so the second half of BGOBJLine — the layer beneath it —
+    // is never read, and the BG passes need not push pixels down into
+    // it: a load and a store per pixel that nothing ever looks at.
+    bool CompositeIdentity;
+    // Set for the line when no window is enabled, so WindowMask is all
+    // ones and the per-pixel test against it is a foregone conclusion.
+    bool WindowsIdle;
+
     // Per-line bitmask of the sprites DrawSprites would accept — a pure
     // function of this engine's OAM half, rebuilt when GPU.OAMDirty
     // reports a write. Turns the 128-entry scan every line into a walk

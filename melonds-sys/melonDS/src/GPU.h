@@ -545,12 +545,34 @@ public:
         return *(T*)&Palette[addr & 0x7FF];
     }
 
+    // A 15-bit BGR colour in the compositor's pixel format: 6-bit red,
+    // green and blue in bytes 0, 1 and 2, green carrying its low bit
+    // from bit 15. What every scanline loop used to compute per pixel.
+    static constexpr u32 ExpandBGR555(u16 c)
+    {
+        return ((c & 0x001F) << 1) | (((c & 0x03E0) >> 4) << 8)
+             | ((c & 0x8000) >> 7)  | (((c & 0x7C00) >> 9) << 16);
+    }
+
+    void RebuildPaletteRGB()
+    {
+        for (u32 i = 0; i < 1024; i++)
+            PaletteRGB[i] = ExpandBGR555(((const u16*)Palette)[i]);
+    }
+
     template<typename T>
     void WritePalette(u32 addr, T val)
     {
         addr &= 0x7FF;
 
         *(T*)&Palette[addr] = val;
+
+        // The entries this write landed in, expanded again: one for a
+        // byte or a halfword, two for a word.
+        u32 first = addr >> 1;
+        for (u32 i = 0; i < (sizeof(T) > 2 ? sizeof(T) / 2 : 1); i++)
+            PaletteRGB[first + i] = ExpandBGR555(((const u16*)Palette)[first + i]);
+
         if (addr & 0x3FE)
             PaletteDirty |= 1 << (addr / VRAMDirtyGranularity);
         else
@@ -644,6 +666,15 @@ public:
     bool CaptureEnable = false;
 
     alignas(u64) u8 Palette[2*1024] {};
+
+    // The same 1024 entries in the compositor's pixel format, so a
+    // scanline indexes a word instead of taking a colour apart per
+    // pixel. Every write to palette memory comes through WritePalette,
+    // which keeps this in step; the bulk paths (reset, savestate load)
+    // call RebuildPaletteRGB. Not emulated state — derived from
+    // Palette, so no savestate carries it.
+    alignas(16) u32 PaletteRGB[1024] {};
+
     alignas(u64) u8 OAM[2*1024] {};
 
     alignas(u64) u8 VRAM_A[128*1024] {};
