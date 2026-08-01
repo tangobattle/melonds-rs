@@ -576,13 +576,11 @@ protected:
     // settles. Advanced a span at a time, both consoles cover the same
     // emulated time per tick whatever either game does to its display.
     //
-    // Absolute rather than a per-call duration so that the tail of a
-    // frame that overran carries into the next span instead of being
-    // rounded away.
+    // Absolute rather than a per-call duration so that the overrun of a
+    // frame that ran past it is repaid out of the next span instead of
+    // being rounded away — a call whose console is already past this
+    // draws nothing at all.
     u64 SliceEnd = 0;
-    // Whether the last call stopped inside a video frame, so the next
-    // must resume that frame rather than start another.
-    bool MidSlice = false;
     u64 NextTarget();
     u64 NextTargetSleep();
     void CheckKeyIRQ(u32 cpu, u32 oldkey, u32 newkey);
