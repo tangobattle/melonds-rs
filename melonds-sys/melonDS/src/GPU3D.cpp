@@ -147,38 +147,26 @@ GPU3D::GPU3D(melonDS::GPU& gpu) noexcept :
 {
 }
 
+// With `Clipped` a word, a vertex *is* the 64-byte record the packing
+// below used to assemble — same fields in the same places. So a vertex
+// serializes as itself, and VertexRAM as one array rather than twelve
+// thousand assembled copies. The asserts are what keeps that true.
+static_assert(sizeof(Vertex) == 64, "a vertex is no longer its savestate record");
+static_assert(offsetof(Vertex, Clipped) == 32, "Clipped moved");
+static_assert(offsetof(Vertex, FinalPosition) == 36, "FinalPosition moved");
+static_assert(offsetof(Vertex, HiresPosition) == 56, "HiresPosition moved");
+
+// The runs the polygon record copies wholesale, in the struct's terms.
+static_assert(offsetof(Polygon, NumVertices) == 80, "polygon record: NumVertices moved");
+static_assert(offsetof(Polygon, WBuffer) == 164, "polygon record: the NumVertices..FinalW run moved");
+static_assert(offsetof(Polygon, Attr) == 168, "polygon record: Attr moved");
+static_assert(offsetof(Polygon, Degenerate) == 180, "polygon record: the Attr..TexPalette run moved");
+static_assert(offsetof(Polygon, Type) == 188, "polygon record: Type moved");
+static_assert(offsetof(Polygon, SortKey) == 216, "polygon record: the Type..SortKey run moved");
+
 void Vertex::DoSavestate(Savestate* file) noexcept
 {
-    // One packed 64-byte record per vertex instead of seven separately
-    // bounds-checked writes: VertexRAM serializes thousands of these
-    // per savestate, and the per-field overhead dominated the section.
-    // The byte layout matches the former per-field writes exactly.
-    u8 buf[64];
-    if (file->Saving)
-    {
-        memcpy(&buf[0], Position, 16);
-        memcpy(&buf[16], Color, 12);
-        memcpy(&buf[28], TexCoords, 4);
-        u32 clipped = Clipped;
-        memcpy(&buf[32], &clipped, 4);
-        memcpy(&buf[36], FinalPosition, 8);
-        memcpy(&buf[44], FinalColor, 12);
-        memcpy(&buf[56], HiresPosition, 8);
-        file->VarSmall(buf, 64);
-    }
-    else
-    {
-        file->VarSmall(buf, 64);
-        memcpy(Position, &buf[0], 16);
-        memcpy(Color, &buf[16], 12);
-        memcpy(TexCoords, &buf[28], 4);
-        u32 clipped;
-        memcpy(&clipped, &buf[32], 4);
-        Clipped = clipped != 0;
-        memcpy(FinalPosition, &buf[36], 8);
-        memcpy(FinalColor, &buf[44], 12);
-        memcpy(HiresPosition, &buf[56], 8);
-    }
+    file->VarSmall(this, sizeof(Vertex));
 }
 
 void GPU3D::ResetRenderingState() noexcept
@@ -425,10 +413,7 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
     file->Var32(&FlushRequest);
     file->Var32(&FlushAttributes);
 
-    for (Vertex& vtx : VertexRAM)
-    {
-        vtx.DoSavestate(file);
-    }
+    file->VarArray(VertexRAM, sizeof(VertexRAM));
 
     for(int i = 0; i < 2048*2; i++)
     {
@@ -439,6 +424,10 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
         // (which always ran with the Type field — every state this
         // core loads is its own, far past version 4.1). Pointers still
         // travel as indices.
+        // The record's plain-data runs are contiguous in the struct
+        // too, so three of them carry 128 of its 188 bytes; only the
+        // ten pointers and the five bools it widens to words have to be
+        // taken one at a time.
         u8 buf[188];
         u32 v;
         if (file->Saving)
@@ -449,30 +438,15 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
                 v = ptr ? (u32)(ptr - &VertexRAM[0]) : UINT32_MAX;
                 memcpy(&buf[j * 4], &v, 4);
             }
-            memcpy(&buf[40], &poly->NumVertices, 4);
-            memcpy(&buf[44], poly->FinalZ, 40);
-            memcpy(&buf[84], poly->FinalW, 40);
+            memcpy(&buf[40], &poly->NumVertices, 84); // + FinalZ, FinalW
             v = poly->WBuffer;
             memcpy(&buf[124], &v, 4);
-            memcpy(&buf[128], &poly->Attr, 4);
-            memcpy(&buf[132], &poly->TexParam, 4);
-            memcpy(&buf[136], &poly->TexPalette, 4);
-            v = poly->FacingView;
-            memcpy(&buf[140], &v, 4);
-            v = poly->Translucent;
-            memcpy(&buf[144], &v, 4);
-            v = poly->IsShadowMask;
-            memcpy(&buf[148], &v, 4);
-            v = poly->IsShadow;
-            memcpy(&buf[152], &v, 4);
-            memcpy(&buf[156], &poly->Type, 4);
-            memcpy(&buf[160], &poly->VTop, 4);
-            memcpy(&buf[164], &poly->VBottom, 4);
-            memcpy(&buf[168], &poly->YTop, 4);
-            memcpy(&buf[172], &poly->YBottom, 4);
-            memcpy(&buf[176], &poly->XTop, 4);
-            memcpy(&buf[180], &poly->XBottom, 4);
-            memcpy(&buf[184], &poly->SortKey, 4);
+            memcpy(&buf[128], &poly->Attr, 12); // + TexParam, TexPalette
+            const u32 flags[4] = {
+                poly->FacingView, poly->Translucent, poly->IsShadowMask, poly->IsShadow,
+            };
+            memcpy(&buf[140], flags, 16);
+            memcpy(&buf[156], &poly->Type, 32); // + V/Y/X top and bottom, SortKey
             file->VarSmall(buf, 188);
         }
         else
@@ -483,30 +457,17 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
                 memcpy(&v, &buf[j * 4], 4);
                 poly->Vertices[j] = v == UINT32_MAX ? nullptr : &VertexRAM[v];
             }
-            memcpy(&poly->NumVertices, &buf[40], 4);
-            memcpy(poly->FinalZ, &buf[44], 40);
-            memcpy(poly->FinalW, &buf[84], 40);
+            memcpy(&poly->NumVertices, &buf[40], 84);
             memcpy(&v, &buf[124], 4);
             poly->WBuffer = v != 0;
-            memcpy(&poly->Attr, &buf[128], 4);
-            memcpy(&poly->TexParam, &buf[132], 4);
-            memcpy(&poly->TexPalette, &buf[136], 4);
-            memcpy(&v, &buf[140], 4);
-            poly->FacingView = v != 0;
-            memcpy(&v, &buf[144], 4);
-            poly->Translucent = v != 0;
-            memcpy(&v, &buf[148], 4);
-            poly->IsShadowMask = v != 0;
-            memcpy(&v, &buf[152], 4);
-            poly->IsShadow = v != 0;
-            memcpy(&poly->Type, &buf[156], 4);
-            memcpy(&poly->VTop, &buf[160], 4);
-            memcpy(&poly->VBottom, &buf[164], 4);
-            memcpy(&poly->YTop, &buf[168], 4);
-            memcpy(&poly->YBottom, &buf[172], 4);
-            memcpy(&poly->XTop, &buf[176], 4);
-            memcpy(&poly->XBottom, &buf[180], 4);
-            memcpy(&poly->SortKey, &buf[184], 4);
+            memcpy(&poly->Attr, &buf[128], 12);
+            u32 flags[4];
+            memcpy(flags, &buf[140], 16);
+            poly->FacingView = flags[0] != 0;
+            poly->Translucent = flags[1] != 0;
+            poly->IsShadowMask = flags[2] != 0;
+            poly->IsShadow = flags[3] != 0;
+            memcpy(&poly->Type, &buf[156], 32);
 
             poly->Degenerate = false;
 

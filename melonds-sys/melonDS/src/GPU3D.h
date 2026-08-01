@@ -35,7 +35,11 @@ struct Vertex
     s32 Color[3];
     s16 TexCoords[2];
 
-    bool Clipped;
+    // A word rather than a bool, so that the struct *is* its savestate
+    // record and thousands of them serialize as one array — see
+    // Vertex::DoSavestate. As a bool it also left three padding bytes
+    // that nothing ever wrote and every vertex copy carried along.
+    u32 Clipped;
 
     // final vertex attributes.
     // allows them to be reused in polygon strips.
