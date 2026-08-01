@@ -88,6 +88,23 @@ void SoftRenderer::DoSavestate(Savestate* file)
 {
     Renderer::DoSavestate(file);
 
+    // Only for a console someone is looking at. With rendering off
+    // nothing writes these buffers — DrawScanline composites just the
+    // lines the capture unit reads, and those land in VRAM, which is
+    // state already — and nothing reads them back, so the pixels are
+    // not state and a rollback pair should not pay 768K a snapshot to
+    // carry them. That is the usual case on a link: only the seat on
+    // screen renders.
+    //
+    // The flag rides in the state so the stream stays aligned whichever
+    // way it was written. A state saved dark and loaded into a console
+    // that is now rendering leaves it whatever pixels it had, for the
+    // rest of one frame.
+    bool rendered = GPU.RenderEnabled;
+    file->VarBool(&rendered);
+    if (!rendered)
+        return;
+
     // Both buffers, not just the one on screen. A state taken partway
     // through a video frame is resumed by drawing the rest of that
     // frame into the back buffer, over lines that were rasterized
