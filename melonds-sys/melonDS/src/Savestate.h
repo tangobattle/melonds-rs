@@ -28,7 +28,8 @@
 // 14.1 carries the CPUs' fetch-timing scratch — see ARM::DoSavestate.
 // 14.2 carries the divider and square-root registers — see NDS::DoSavestate.
 // 14.3 carries the tick's span of emulated time — see NDS::SliceEnd.
-#define SAVESTATE_MINOR 3
+// 14.4 carries the renderer's rasterized output — see Renderer::DoSavestate.
+#define SAVESTATE_MINOR 4
 
 // bitmask for the savestate config word
 enum

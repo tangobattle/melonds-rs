@@ -881,6 +881,23 @@ public:
     virtual void PreSavestate() {}
     virtual void PostSavestate() {}
 
+    // The rasterized output itself, which is state as soon as a tick
+    // can end partway through a video frame: the rest of that frame is
+    // drawn after the state is taken, so a console restored into the
+    // middle of one keeps whatever is in the buffer for the part it
+    // does not redraw — on a rollback, the pixels of the run that was
+    // taken back. Which buffer is the back one goes with them; a
+    // restore that disagreed about that would present the one being
+    // drawn into.
+    //
+    // The base carries that index alone, which is all a renderer whose
+    // output lives somewhere a savestate cannot reach (a GL texture)
+    // can offer.
+    virtual void DoSavestate(Savestate* file)
+    {
+        file->Var32((u32*)&BackBuffer);
+    }
+
     // A savestate was just loaded into the GPU: rebuild whatever
     // cross-frame raster state the next frame will read but no
     // savestate carries. The soft renderer's line-0 sprite pre-render

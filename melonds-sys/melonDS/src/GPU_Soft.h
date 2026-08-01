@@ -37,6 +37,7 @@ public:
 
     void PreSavestate() override;
     void PostSavestate() override;
+    void DoSavestate(Savestate* file) override;
     void PostLoadState() override;
 
     void SetRenderSettings(RendererSettings& settings) override;

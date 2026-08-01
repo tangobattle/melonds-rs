@@ -84,6 +84,22 @@ void SoftRenderer::PostSavestate()
         rend3d->EnableRenderThread();
 }
 
+void SoftRenderer::DoSavestate(Savestate* file)
+{
+    Renderer::DoSavestate(file);
+
+    // Both buffers, not just the one on screen. A state taken partway
+    // through a video frame is resumed by drawing the rest of that
+    // frame into the back buffer, over lines that were rasterized
+    // before the state was taken — so those lines are as much a part of
+    // it as the finished picture in the front buffer is.
+    const size_t len = 256 * 192 * sizeof(u32);
+    file->VarArray(Framebuffer[0][0], len);
+    file->VarArray(Framebuffer[0][1], len);
+    file->VarArray(Framebuffer[1][0], len);
+    file->VarArray(Framebuffer[1][1], len);
+}
+
 void SoftRenderer::PostLoadState()
 {
     // Rasterized output is not savestate state, but the next frame

@@ -216,6 +216,11 @@ void GPU::DoSavestate(Savestate* file) noexcept
 
     memset(VRAMCaptureBlockFlags, 0, sizeof(VRAMCaptureBlockFlags));
 
+    // 14.4: the renderer's own — its buffer index and, where the output
+    // lives in RAM, the rasterized pixels. See Renderer::DoSavestate.
+    if (file->IsAtLeastVersion(14, 4))
+        Rend->DoSavestate(file);
+
     file->VarBool(&ScreensEnabled);
     file->VarBool(&ScreenSwap);
 

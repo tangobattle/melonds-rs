@@ -492,6 +492,7 @@ void NDS::Reset()
     ARM7Timestamp = 0; ARM7Target = 0;
     SysTimestamp = 0;
     SliceEnd = 0;
+    MidSlice = false;
 
     InitTimings();
 
@@ -773,21 +774,19 @@ bool NDS::DoSavestate(Savestate* file)
     file->Var64(&SysTimestamp);
     file->Var64(&LastSysClockCycles);
     file->Var64(&FrameStartTimestamp);
-    // 14.3: where this tick's span of emulated time ends. A state that
-    // did not carry it resumed as if the span started here, losing
-    // whatever a stretched frame had overrun by. The bool beside it was
-    // a mid-frame resume flag, from when a call could stop partway
-    // through a video frame; calls run whole frames now, so it is read
-    // and dropped.
+    // 14.3: where this tick's span of emulated time ends, and whether
+    // the console is partway through a video frame at that point. A
+    // state that carried neither resumed at a frame boundary and lost
+    // whatever remained of a stretched one.
     if (file->IsAtLeastVersion(14, 3))
     {
         file->Var64(&SliceEnd);
-        bool midslice = false;
-        file->VarBool(&midslice);
+        file->VarBool(&MidSlice);
     }
     else if (!file->Saving)
     {
         SliceEnd = SysTimestamp;
+        MidSlice = false;
     }
     file->Var32(&NumFrames);
     file->Var32(&NumLagFrames);
@@ -1035,6 +1034,7 @@ u32 NDS::RunFrame()
     GPU.TotalScanlines = 0;
 
     LagFrameFlag = true;
+    bool runFrame = Running && !(CPUStop & CPUStop_Sleep);
 
     // This call's span of emulated time (see SliceEnd). A gap of more
     // than a whole span means the timeline moved under us — a boot, or
@@ -1045,15 +1045,13 @@ u32 NDS::RunFrame()
         SliceEnd = SysTimestamp;
     SliceEnd += kFrameCycles;
 
-    // The console is already past where this call's span ends: the
-    // previous one overran it, by however much its last frame was
-    // longer than the span. Drawing another frame now would only push
-    // it further ahead, so the call ends having produced nothing — a
-    // display that runs longer than the span drops a frame every so
-    // often, which is exactly what one does on hardware. The span
-    // being absolute is what makes that self-correcting: the debt is
-    // paid here rather than carried.
-    while (Running && SysTimestamp < SliceEnd)
+    // Cleared here rather than where it is read: the outer loop below
+    // can go round again (the sleep path), and only the first pass is
+    // resuming anything.
+    bool resuming = MidSlice;
+    MidSlice = false;
+
+    while (Running)
     {
         u64 frametarget = SysTimestamp + kFrameCycles;
 
@@ -1091,20 +1089,14 @@ u32 NDS::RunFrame()
                 ARM7.CheckGdbIncoming();
             }
 
-            if (!(CPUStop & CPUStop_Wakeup))
+            if (!(CPUStop & CPUStop_Wakeup) && !resuming)
             {
                 GPU.StartFrame();
             }
             CPUStop &= ~CPUStop_Wakeup;
+            resuming = false;
 
-            // Whole frames only. A call may run several to fill its
-            // span, or none at all, but it never stops partway: a tick
-            // boundary that is also a frame boundary is what lets a
-            // restored console present the same picture the one that
-            // was never rolled back does — rasterized output is not
-            // savestate state, so a half-drawn frame would carry the
-            // taken-back run's pixels in the half it did not redraw.
-            while (Running && GPU.TotalScanlines==0)
+            while (Running && GPU.TotalScanlines==0 && SysTimestamp < SliceEnd)
             {
                 u64 target = NextTarget();
                 ARM9Target = target << ARM9ClockShift;
@@ -1173,11 +1165,17 @@ u32 NDS::RunFrame()
             }
         }
 
-        // Drew nothing: sleep mode, which advances time without a
-        // display. The span still governs, so the loop condition ends
-        // the call once it is met.
         if (GPU.TotalScanlines == 0)
+        {
+            // The span ended inside a video frame. Leave the frame
+            // running — the next call picks it up where the LCD is.
+            if (SysTimestamp >= SliceEnd)
+            {
+                MidSlice = true;
+                break;
+            }
             continue;
+        }
 
 #ifdef DEBUG_CHECK_DESYNC
         Log(LogLevel::Debug, "[%08X%08X] ARM9=%ld, ARM7=%ld, GPU=%ld\n",
@@ -1187,14 +1185,21 @@ u32 NDS::RunFrame()
             GPU.GPU3D.Timestamp-SysTimestamp);
 #endif
 
-        // The frame is drawn; the loop goes round again if the span
-        // still has room for another. Stopping here instead — handing
-        // the remainder back — is time the console could never make up,
-        // because every later call would stop at its own frame boundary
-        // too. A console that gave a frame's worth back once ran a frame
-        // behind its peer for the rest of the session, which on a link
-        // is the client's replies landing outside every one of the
-        // host's poll windows.
+        // The frame is drawn and the span still has room: go round again
+        // rather than hand the remainder back. Time given back here can
+        // never be made up, because every later call stops at a frame
+        // boundary too — a console that gave a frame's worth back once
+        // ran a frame behind its peer for the rest of the session, which
+        // on a link is every one of the client's replies landing outside
+        // the host's poll window.
+        //
+        // The resumed call is what hands back the most: the tail of an
+        // overrun frame can be a few scanlines, leaving nearly a whole
+        // span unspent.
+        if (SysTimestamp < SliceEnd)
+            continue;
+
+        break;
     }
 
     // Ensure the last audio samples produced for this frame are available to the frontend immediately
