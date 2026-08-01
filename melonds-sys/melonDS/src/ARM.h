@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <cstring>
 
 #include "types.h"
 #include "MemRegion.h"
@@ -268,7 +269,19 @@ public:
     u32 R_IRQ[3];
     u32 R_UND[3];
     u32 CurInstr = 0;
-    u32 NextInstr[2];
+    // The prefetch pair travels as one word — see the shuffle in
+    // ARM::Execute. Aligned so that word is a single access that never
+    // crosses a cache line, and so it cannot be merged with the
+    // `CurInstr` store next to it.
+    alignas(8) u32 NextInstr[2];
+
+    // Fill the pair the way the shuffle reads it, so a refill's store
+    // is one the next instruction's load can be handed straight back.
+    void StorePipeline(u32 first, u32 second)
+    {
+        u64 pipe = first | ((u64)second << 32);
+        memcpy(NextInstr, &pipe, sizeof(pipe));
+    }
 
     u32 ExceptionBase;
 

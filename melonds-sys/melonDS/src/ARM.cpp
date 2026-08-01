@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <assert.h>
 #include <algorithm>
+#include <cstring>
 #include "NDS.h"
 #include "DSi.h"
 #include "ARM.h"
@@ -379,19 +380,21 @@ void ARMv5::JumpTo(u32 addr, bool restorecpsr)
 
         // two-opcodes-at-once fetch
         // doesn't matter if we put garbage in the MSbs there
+        u32 lo, hi;
         if (addr & 0x2)
         {
-            NextInstr[0] = CodeRead32(addr-2, true) >> 16;
+            lo = CodeRead32(addr-2, true) >> 16;
             Cycles += CodeCycles;
-            NextInstr[1] = CodeRead32(addr+2, false);
+            hi = CodeRead32(addr+2, false);
             Cycles += CodeCycles;
         }
         else
         {
-            NextInstr[0] = CodeRead32(addr, true);
-            NextInstr[1] = NextInstr[0] >> 16;
+            lo = CodeRead32(addr, true);
+            hi = lo >> 16;
             Cycles += CodeCycles;
         }
+        StorePipeline(lo, hi);
 
         CPSR |= 0x20;
     }
@@ -402,10 +405,11 @@ void ARMv5::JumpTo(u32 addr, bool restorecpsr)
 
         if (newregion != oldregion) SetupCodeMem(addr);
 
-        NextInstr[0] = CodeRead32(addr, true);
+        u32 lo = CodeRead32(addr, true);
         Cycles += CodeCycles;
-        NextInstr[1] = CodeRead32(addr+4, false);
+        u32 hi = CodeRead32(addr+4, false);
         Cycles += CodeCycles;
+        StorePipeline(lo, hi);
 
         CPSR &= ~0x20;
     }
@@ -442,8 +446,9 @@ void ARMv4::JumpTo(u32 addr, bool restorecpsr)
 
         //if (newregion != oldregion) SetupCodeMem(addr);
 
-        NextInstr[0] = CodeRead16(addr);
-        NextInstr[1] = CodeRead16(addr+2);
+        u32 lo = CodeRead16(addr);
+        u32 hi = CodeRead16(addr+2);
+        StorePipeline(lo, hi);
         Cycles += NDS.ARM7MemTimings[CodeCycles][0] + NDS.ARM7MemTimings[CodeCycles][1];
 
         CPSR |= 0x20;
@@ -455,8 +460,9 @@ void ARMv4::JumpTo(u32 addr, bool restorecpsr)
 
         //if (newregion != oldregion) SetupCodeMem(addr);
 
-        NextInstr[0] = CodeRead32(addr);
-        NextInstr[1] = CodeRead32(addr+4);
+        u32 lo = CodeRead32(addr);
+        u32 hi = CodeRead32(addr+4);
+        StorePipeline(lo, hi);
         Cycles += NDS.ARM7MemTimings[CodeCycles][2] + NDS.ARM7MemTimings[CodeCycles][3];
 
         CPSR &= ~0x20;
@@ -686,7 +692,13 @@ void ARMv5::Execute()
     // the match, which runs with no traps at all.
     bool traps = TrapHandler != nullptr;
 
-    while (NDS.ARM9Timestamp < NDS.ARM9Target)
+    // The console, in a register. `NDS` is a reference member, but the
+    // compiler cannot see that a handler call leaves it alone, so it
+    // re-read the pointer out of `this` twice per instruction — once to
+    // add the cycles, once to test the target.
+    melonDS::NDS& nds = NDS;
+
+    while (nds.ARM9Timestamp < nds.ARM9Target)
     {
 #ifdef JIT_ENABLED
         if constexpr (mode == CPUExecuteMode::JIT)
@@ -707,19 +719,19 @@ void ARMv5::Execute()
             }
 
             if ((instrAddr < FastBlockLookupStart || instrAddr >= (FastBlockLookupStart + FastBlockLookupSize))
-                && !NDS.JIT.SetupExecutableRegion(0, instrAddr, FastBlockLookup, FastBlockLookupStart, FastBlockLookupSize))
+                && !nds.JIT.SetupExecutableRegion(0, instrAddr, FastBlockLookup, FastBlockLookupStart, FastBlockLookupSize))
             {
-                NDS.ARM9Timestamp = NDS.ARM9Target;
+                nds.ARM9Timestamp = nds.ARM9Target;
                 Log(LogLevel::Error, "ARMv5 PC in non executable region %08X\n", R[15]);
                 return;
             }
 
-            JitBlockEntry block = NDS.JIT.LookUpBlock(0, FastBlockLookup,
+            JitBlockEntry block = nds.JIT.LookUpBlock(0, FastBlockLookup,
                 instrAddr - FastBlockLookupStart, instrAddr);
             if (block)
                 ARM_Dispatch(this, block);
             else
-                NDS.JIT.CompileBlock(this);
+                nds.JIT.CompileBlock(this);
 
             if (StopExecution)
             {
@@ -729,10 +741,10 @@ void ARMv5::Execute()
 
                 if (Halted || IdleLoop)
                 {
-                    if ((Halted == 1 || IdleLoop) && NDS.ARM9Timestamp < NDS.ARM9Target)
+                    if ((Halted == 1 || IdleLoop) && nds.ARM9Timestamp < nds.ARM9Target)
                     {
                         Cycles = 0;
-                        NDS.ARM9Timestamp = NDS.ARM9Target;
+                        nds.ARM9Timestamp = nds.ARM9Target;
                     }
                     IdleLoop = 0;
                     break;
@@ -752,14 +764,27 @@ void ARMv5::Execute()
                 if (traps) [[unlikely]] { CheckTrap(R[15] - 2); traps = TrapHandler != nullptr; }
 
                 // prefetch
+                //
+                // The pair moves as one aligned word. Written as a
+                // `CurInstr`+`NextInstr[0]` store and a separate
+                // `NextInstr[1]` store, the next instruction's read of
+                // the pair straddled both — and no store forwards to a
+                // load that overlaps two of them, so every instruction
+                // paid the stall.
                 R[15] += 2;
-                CurInstr = NextInstr[0];
-                NextInstr[0] = NextInstr[1];
-                if (R[15] & 0x2) { NextInstr[1] >>= 16; CodeCycles = 0; }
-                else             NextInstr[1] = CodeRead32(R[15], false);
+                u64 pipe;
+                memcpy(&pipe, NextInstr, sizeof(pipe));
+                u32 cur = (u32)pipe;
+                u32 next = (u32)(pipe >> 32);
+                CurInstr = cur;
+                u32 fetched;
+                if (R[15] & 0x2) { fetched = next >> 16; CodeCycles = 0; }
+                else             fetched = CodeRead32(R[15], false);
+                pipe = next | ((u64)fetched << 32);
+                memcpy(NextInstr, &pipe, sizeof(pipe));
 
                 // actually execute
-                u32 icode = (CurInstr >> 6) & 0x3FF;
+                u32 icode = (cur >> 6) & 0x3FF;
                 ARMInterpreter::V5::THUMBInstrTable[icode](this);
             }
             else
@@ -769,19 +794,23 @@ void ARMv5::Execute()
 
                 if (traps) [[unlikely]] { CheckTrap(R[15] - 4); traps = TrapHandler != nullptr; }
 
-                // prefetch
+                // prefetch (see the THUMB path above)
                 R[15] += 4;
-                CurInstr = NextInstr[0];
-                NextInstr[0] = NextInstr[1];
-                NextInstr[1] = CodeRead32(R[15], false);
+                u64 pipe;
+                memcpy(&pipe, NextInstr, sizeof(pipe));
+                u32 cur = (u32)pipe;
+                CurInstr = cur;
+                u64 fetched = CodeRead32(R[15], false);
+                pipe = (pipe >> 32) | (fetched << 32);
+                memcpy(NextInstr, &pipe, sizeof(pipe));
 
                 // actually execute
-                if (CheckCondition(CurInstr >> 28))
+                if (CheckCondition(cur >> 28))
                 {
-                    u32 icode = ((CurInstr >> 4) & 0xF) | ((CurInstr >> 16) & 0xFF0);
+                    u32 icode = ((cur >> 4) & 0xF) | ((cur >> 16) & 0xFF0);
                     ARMInterpreter::V5::ARMInstrTable[icode](this);
                 }
-                else if ((CurInstr & 0xFE000000) == 0xFA000000)
+                else if ((cur & 0xFE000000) == 0xFA000000)
                 {
                     ARMInterpreter::A_BLX_IMM<ARMv5>(this);
                 }
@@ -794,22 +823,28 @@ void ARMv5::Execute()
             // ask the word first and only take them apart when it says
             // something happened. Same order as before: halt wins, and
             // an IRQ raised by the instruction is taken at its end.
+            //
+            // `IRQ` says a line is asserted, not that the CPU will take
+            // it: through a whole handler, which runs with I set, it
+            // stays raised and every instruction called `TriggerIRQ`
+            // only for its first line to send it back. That test is the
+            // caller's now.
             if (StopExecution) [[unlikely]]
             {
                 if (Halted)
                 {
-                    if (Halted == 1 && NDS.ARM9Timestamp < NDS.ARM9Target)
+                    if (Halted == 1 && nds.ARM9Timestamp < nds.ARM9Target)
                     {
-                        NDS.ARM9Timestamp = NDS.ARM9Target;
+                        nds.ARM9Timestamp = nds.ARM9Target;
                     }
                     break;
                 }
-                if (IRQ) TriggerIRQ();
+                if (IRQ && !(CPSR & 0x80)) TriggerIRQ();
             }
 
         }
 
-        NDS.ARM9Timestamp += Cycles;
+        nds.ARM9Timestamp += Cycles;
         Cycles = 0;
     }
 
@@ -849,8 +884,9 @@ void ARMv4::Execute()
 
     // See the ARM9's copy above.
     bool traps = TrapHandler != nullptr;
+    melonDS::NDS& nds = NDS;
 
-    while (NDS.ARM7Timestamp < NDS.ARM7Target)
+    while (nds.ARM7Timestamp < nds.ARM7Target)
     {
 #ifdef JIT_ENABLED
         if constexpr (mode == CPUExecuteMode::JIT)
@@ -871,19 +907,19 @@ void ARMv4::Execute()
             }
 
             if ((instrAddr < FastBlockLookupStart || instrAddr >= (FastBlockLookupStart + FastBlockLookupSize))
-                && !NDS.JIT.SetupExecutableRegion(1, instrAddr, FastBlockLookup, FastBlockLookupStart, FastBlockLookupSize))
+                && !nds.JIT.SetupExecutableRegion(1, instrAddr, FastBlockLookup, FastBlockLookupStart, FastBlockLookupSize))
             {
-                NDS.ARM7Timestamp = NDS.ARM7Target;
+                nds.ARM7Timestamp = nds.ARM7Target;
                 Log(LogLevel::Error, "ARMv4 PC in non executable region %08X\n", R[15]);
                 return;
             }
 
-            JitBlockEntry block = NDS.JIT.LookUpBlock(1, FastBlockLookup,
+            JitBlockEntry block = nds.JIT.LookUpBlock(1, FastBlockLookup,
                 instrAddr - FastBlockLookupStart, instrAddr);
             if (block)
                 ARM_Dispatch(this, block);
             else
-                NDS.JIT.CompileBlock(this);
+                nds.JIT.CompileBlock(this);
 
             if (StopExecution)
             {
@@ -892,10 +928,10 @@ void ARMv4::Execute()
 
                 if (Halted || IdleLoop)
                 {
-                    if ((Halted == 1 || IdleLoop) && NDS.ARM7Timestamp < NDS.ARM7Target)
+                    if ((Halted == 1 || IdleLoop) && nds.ARM7Timestamp < nds.ARM7Target)
                     {
                         Cycles = 0;
-                        NDS.ARM7Timestamp = NDS.ARM7Target;
+                        nds.ARM7Timestamp = nds.ARM7Target;
                     }
                     IdleLoop = 0;
                     break;
@@ -915,14 +951,18 @@ void ARMv4::Execute()
                 // target rather than this instruction.
                 if (traps) [[unlikely]] { CheckTrap(R[15] - 2); traps = TrapHandler != nullptr; }
 
-                // prefetch
+                // prefetch (see the ARM9's copy above)
                 R[15] += 2;
-                CurInstr = NextInstr[0];
-                NextInstr[0] = NextInstr[1];
-                NextInstr[1] = CodeRead16(R[15]);
+                u64 pipe;
+                memcpy(&pipe, NextInstr, sizeof(pipe));
+                u32 cur = (u32)pipe;
+                CurInstr = cur;
+                u64 fetched = CodeRead16(R[15]);
+                pipe = (pipe >> 32) | (fetched << 32);
+                memcpy(NextInstr, &pipe, sizeof(pipe));
 
                 // actually execute
-                u32 icode = (CurInstr >> 6);
+                u32 icode = (cur >> 6);
                 ARMInterpreter::V4::THUMBInstrTable[icode](this);
             }
             else
@@ -932,16 +972,20 @@ void ARMv4::Execute()
 
                 if (traps) [[unlikely]] { CheckTrap(R[15] - 4); traps = TrapHandler != nullptr; }
 
-                // prefetch
+                // prefetch (see the ARM9's copy above)
                 R[15] += 4;
-                CurInstr = NextInstr[0];
-                NextInstr[0] = NextInstr[1];
-                NextInstr[1] = CodeRead32(R[15]);
+                u64 pipe;
+                memcpy(&pipe, NextInstr, sizeof(pipe));
+                u32 cur = (u32)pipe;
+                CurInstr = cur;
+                u64 fetched = CodeRead32(R[15]);
+                pipe = (pipe >> 32) | (fetched << 32);
+                memcpy(NextInstr, &pipe, sizeof(pipe));
 
                 // actually execute
-                if (CheckCondition(CurInstr >> 28))
+                if (CheckCondition(cur >> 28))
                 {
-                    u32 icode = ((CurInstr >> 4) & 0xF) | ((CurInstr >> 16) & 0xFF0);
+                    u32 icode = ((cur >> 4) & 0xF) | ((cur >> 16) & 0xFF0);
                     ARMInterpreter::V4::ARMInstrTable[icode](this);
                 }
                 else
@@ -953,17 +997,17 @@ void ARMv4::Execute()
             {
                 if (Halted)
                 {
-                    if (Halted == 1 && NDS.ARM7Timestamp < NDS.ARM7Target)
+                    if (Halted == 1 && nds.ARM7Timestamp < nds.ARM7Target)
                     {
-                        NDS.ARM7Timestamp = NDS.ARM7Target;
+                        nds.ARM7Timestamp = nds.ARM7Target;
                     }
                     break;
                 }
-                if (IRQ) TriggerIRQ();
+                if (IRQ && !(CPSR & 0x80)) TriggerIRQ();
             }
         }
 
-        NDS.ARM7Timestamp += Cycles;
+        nds.ARM7Timestamp += Cycles;
         Cycles = 0;
     }
 
@@ -972,7 +1016,7 @@ void ARMv4::Execute()
 
     if (Halted == 4)
     {
-        assert(NDS.ConsoleType == 1);
+        assert(nds.ConsoleType == 1);
         auto& dsi = dynamic_cast<melonDS::DSi&>(NDS);
         dsi.SoftReset();
         Halted = 2;
@@ -993,19 +1037,19 @@ void ARMv5::FillPipeline()
     {
         if ((R[15] - 2) & 0x2)
         {
-            NextInstr[0] = CodeRead32(R[15] - 4, false) >> 16;
-            NextInstr[1] = CodeRead32(R[15], false);
+            u32 lo = CodeRead32(R[15] - 4, false) >> 16;
+            StorePipeline(lo, CodeRead32(R[15], false));
         }
         else
         {
-            NextInstr[0] = CodeRead32(R[15] - 2, false);
-            NextInstr[1] = NextInstr[0] >> 16;
+            u32 lo = CodeRead32(R[15] - 2, false);
+            StorePipeline(lo, lo >> 16);
         }
     }
     else
     {
-        NextInstr[0] = CodeRead32(R[15] - 4, false);
-        NextInstr[1] = CodeRead32(R[15], false);
+        u32 lo = CodeRead32(R[15] - 4, false);
+        StorePipeline(lo, CodeRead32(R[15], false));
     }
 }
 
@@ -1015,13 +1059,13 @@ void ARMv4::FillPipeline()
 
     if (CPSR & 0x20)
     {
-        NextInstr[0] = CodeRead16(R[15] - 2);
-        NextInstr[1] = CodeRead16(R[15]);
+        u32 lo = CodeRead16(R[15] - 2);
+        StorePipeline(lo, CodeRead16(R[15]));
     }
     else
     {
-        NextInstr[0] = CodeRead32(R[15] - 4);
-        NextInstr[1] = CodeRead32(R[15]);
+        u32 lo = CodeRead32(R[15] - 4);
+        StorePipeline(lo, CodeRead32(R[15]));
     }
 }
 
