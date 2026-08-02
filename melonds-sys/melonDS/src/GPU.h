@@ -845,7 +845,12 @@ private:
 
     std::unique_ptr<Renderer> Rend = nullptr;
 
-    u16 VRAMCaptureBlockFlags[16];
+    // Zeroed here and not just in Reset(), because the constructor
+    // reads these before Reset() ever runs: SetRenderer() flushes
+    // pending captures back through Rend, which is still null while the
+    // console is being built. Whatever the heap left behind then decides
+    // whether that null gets called.
+    u16 VRAMCaptureBlockFlags[16] {};
 
     u16* VRAMCBF_ABG[0x20] {};
     u16* VRAMCBF_AOBJ[0x10] {};
