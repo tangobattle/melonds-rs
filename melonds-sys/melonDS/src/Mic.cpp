@@ -57,6 +57,9 @@ void Mic::Reset()
     StopMask = 0;
     for (int i = 0; i < 3; i++)
         StopCount[i] = 0;
+
+    StaticInput = false;
+    NoiseState = 0x9E3779B9;
 }
 
 void Mic::DoSavestate(melonDS::Savestate *file)
@@ -68,6 +71,7 @@ void Mic::DoSavestate(melonDS::Savestate *file)
     file->Var16((u16*)&CurSample);
     file->Var8(&StopMask);
     file->VarArray(StopCount, sizeof(StopCount));
+    file->Var32(&NoiseState);
 
     if (!file->Saving)
     {
@@ -218,6 +222,24 @@ void Mic::Advance(u32 cycles)
 s16 Mic::ReadSample()
 {
     if (!OpenMask) return 0;
+
+    // Static bypasses the platform buffer rather than filling it: the
+    // buffer is a queue of samples the frontend already produced, and
+    // nothing carries one across a savestate. A generator read at the
+    // moment of the sample has no such queue to lose.
+    if (StaticInput)
+    {
+        // xorshift32 choosing between the two ends of the sample range,
+        // which is the loudest noise the channel can carry: every sample
+        // is full scale, so the AUX conversion swings its whole 12 bits
+        // from one read to the next. Noise drawn uniformly across the
+        // range would peak as high but average far quieter.
+        NoiseState ^= NoiseState << 13;
+        NoiseState ^= NoiseState >> 17;
+        NoiseState ^= NoiseState << 5;
+        return (NoiseState & 0x80000000) ? (s16)0x7FFF : (s16)-0x8000;
+    }
+
     return CurSample;
 }
 

@@ -45,6 +45,12 @@ public:
     void Stop(MicSource source);
     void StopAll();
 
+    // Hold full-scale white noise on the mic in place of the platform's
+    // input, for as long as the frontend asks for it. Set per frame like
+    // the key mask, and not savestated for the same reason: it is an
+    // input, so a rewound console gets it handed back before it runs.
+    void SetStaticInput(bool on) { StaticInput = on; }
+
     void Advance(u32 cycles);
     s16 ReadSample();
 
@@ -62,6 +68,14 @@ private:
     s16 CurSample;
     u8 StopMask;
     u32 StopCount[3];
+
+    bool StaticInput = false;
+    // The static's generator. Unlike the platform's sample buffer this
+    // *is* savestated: a console that hears static is reading it every
+    // time it samples the AUX channel, so where the sequence had got to
+    // is console state, and a restore that lost it would leave two
+    // machines running the same inputs hearing different noise.
+    u32 NoiseState;
 
     void DoStop(MicSource source);
     void FeedBuffer();

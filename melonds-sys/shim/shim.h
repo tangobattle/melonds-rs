@@ -72,6 +72,12 @@ void mds_set_keys(MdsNds* nds, uint32_t keys);
 void mds_touch(MdsNds* nds, uint16_t x, uint16_t y);
 void mds_release_screen(MdsNds* nds);
 
+// Hold full-scale white noise on the microphone. This build's Platform
+// hooks have no host mic behind them, so this is the only mic input a
+// console here can get — and it is an input like the keys above, set
+// per frame and carried by whoever replays the frame.
+void mds_set_mic_static(MdsNds* nds, int on);
+
 // Borrow the current front framebuffers, 32-bit BGRA, 256x192 each.
 // Valid until the next mds_run_frame / mds_state_load. Returns 0 and
 // nulls both on failure (no frame rendered yet).

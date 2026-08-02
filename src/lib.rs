@@ -614,6 +614,18 @@ impl Nds {
         unsafe { melonds_sys::mds_release_screen(self.ptr) }
     }
 
+    /// Hold full-scale white noise on the microphone.
+    ///
+    /// This build has no host mic behind melonDS's platform hooks, so
+    /// static is the only mic input a console here can hear — it is what
+    /// a cart that wants a breath or a shout gets. Like the keys it is
+    /// an input, set per frame: the generator behind it is savestated,
+    /// so a console rewound and re-run over the same inputs hears the
+    /// same noise it did the first time.
+    pub fn set_mic_static(&mut self, on: bool) {
+        unsafe { melonds_sys::mds_set_mic_static(self.ptr, on as i32) }
+    }
+
     /// Toggle framebuffer production. Off skips the 2D compositing for
     /// this console — for an instance nobody displays, or ticks whose
     /// output nobody will look at. Emulation (including display capture

@@ -172,6 +172,11 @@ void mds_release_screen(MdsNds* w)
     w->nds->ReleaseScreen();
 }
 
+void mds_set_mic_static(MdsNds* w, int on)
+{
+    w->nds->Mic.SetStaticInput(on != 0);
+}
+
 void mds_set_render(MdsNds* w, int enabled)
 {
     w->nds->GPU.RenderEnabled = enabled != 0;
