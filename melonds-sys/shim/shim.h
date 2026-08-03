@@ -85,6 +85,9 @@ void mds_set_mic_static(MdsNds* nds, int on);
 // compositing cost for a console nobody displays; emulation (including
 // display capture into VRAM) is bit-identical either way.
 void mds_set_render(MdsNds* nds, int enabled);
+// Which framebuffers the host shows: bit 0 top, bit 1 bottom. An engine
+// whose screen is not shown does not compose it.
+void mds_set_displayed_screens(MdsNds* nds, uint8_t screens);
 
 int mds_framebuffers(MdsNds* nds, const uint32_t** top, const uint32_t** bottom);
 

@@ -182,6 +182,11 @@ void mds_set_render(MdsNds* w, int enabled)
     w->nds->GPU.RenderEnabled = enabled != 0;
 }
 
+void mds_set_displayed_screens(MdsNds* w, uint8_t screens)
+{
+    w->nds->GPU.DisplayedScreens = screens;
+}
+
 int mds_framebuffers(MdsNds* w, const uint32_t** top, const uint32_t** bottom)
 {
     void* t = nullptr;

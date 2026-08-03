@@ -170,6 +170,18 @@ void SoftRenderer::SetRenderSettings(RendererSettings& settings)
 }
 
 
+// Whether a 2D engine is composing a screen anyone will be shown.
+//
+// Which framebuffer an engine feeds is ScreenSwap's answer and it can
+// change mid-frame, so this is asked per line rather than cached. Engine
+// A answers yes regardless while capture is armed: the capture unit
+// reads its output and writes the result into VRAM, which is state.
+bool SoftRenderer::EngineShown(int num) const
+{
+    const int fb = GPU.ScreenSwap ? num : 1 - num;
+    return (GPU.DisplayedScreens & (1 << fb)) || (num == 0 && GPU.CaptureEnable);
+}
+
 void SoftRenderer::DrawScanline(u32 line)
 {
     if (!GPU.RenderEnabled)
@@ -212,13 +224,17 @@ void SoftRenderer::DrawScanline(u32 line)
         // retrieve 3D output
         Output3D = Rend3D->GetLine(line);
 
+        // Only the engines composing a screen someone is shown.
+        const bool needA = EngineShown(0);
+        const bool needB = EngineShown(1);
+
         // draw BG/OBJ layers
-        Rend2D_A->DrawScanline(line);
-        Rend2D_B->DrawScanline(line);
+        if (needA) Rend2D_A->DrawScanline(line);
+        if (needB) Rend2D_B->DrawScanline(line);
 
         // draw the final screen output
-        DrawScanlineA(line, dstA);
-        DrawScanlineB(line, dstB);
+        if (needA) DrawScanlineA(line, dstA);
+        if (needB) DrawScanlineB(line, dstB);
 
         // perform display capture if enabled
         if (GPU.CaptureEnable)
@@ -241,8 +257,8 @@ void SoftRenderer::DrawScanline(u32 line)
     if (GPU.ScreensEnabled)
     {
         // expand the color from 6-bit to 8-bit
-        ExpandColor(dstA);
-        ExpandColor(dstB);
+        if (EngineShown(0)) ExpandColor(dstA);
+        if (EngineShown(1)) ExpandColor(dstB);
     }
     else
     {
@@ -268,8 +284,10 @@ void SoftRenderer::DrawSprites(u32 line)
         return;
     }
 
-    Rend2D_A->DrawSprites(line);
-    Rend2D_B->DrawSprites(line);
+    // Same screen gate as DrawScanline: sprites are only pre-rendered
+    // for an engine whose line is going to be composited.
+    if (EngineShown(0)) Rend2D_A->DrawSprites(line);
+    if (EngineShown(1)) Rend2D_B->DrawSprites(line);
 }
 
 void SoftRenderer::DrawScanlineA(u32 line, u32* dst)

@@ -626,6 +626,18 @@ impl Nds {
         unsafe { melonds_sys::mds_set_render(self.ptr, enabled as i32) }
     }
 
+    /// Which of the console's framebuffers anyone will look at: bit 0
+    /// the top screen, bit 1 the bottom. Both by default.
+    ///
+    /// A 2D engine whose screen is not shown does not compose it. What it
+    /// would have drawn is not state - the capture unit reads engine A
+    /// alone - so the console runs the same match either way and only the
+    /// framebuffer nobody reads goes stale. For a mode spent on one screen
+    /// that is most of the 2D renderer's work.
+    pub fn set_displayed_screens(&mut self, screens: u8) {
+        unsafe { melonds_sys::mds_set_displayed_screens(self.ptr, screens) }
+    }
+
     /// The current front framebuffers (top, bottom), BGRA8888,
     /// 256x192 each. `None` until a frame has rendered.
     pub fn framebuffers(&mut self) -> Option<(&[u32], &[u32])> {

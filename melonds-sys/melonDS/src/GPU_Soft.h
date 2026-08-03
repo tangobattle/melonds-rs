@@ -38,6 +38,8 @@ public:
     void PreSavestate() override;
     void PostSavestate() override;
     void DoSavestate(Savestate* file) override;
+
+    bool EngineShown(int num) const;
     void PostLoadState() override;
 
     void SetRenderSettings(RendererSettings& settings) override;

@@ -648,6 +648,16 @@ public:
     // the console.
     bool RenderEnabled = true;
 
+    // Which of the two framebuffers a host actually shows: bit 0 the
+    // top screen, bit 1 the bottom. Both by default.
+    //
+    // A cart can spend a whole mode on one screen - EXE OSS's netbattle
+    // never leaves the upper one - and the 2D engine feeding the other is
+    // composing pixels nobody will ever see. That output is not state:
+    // the capture unit reads engine A only (see SoftRenderer::DrawSprites),
+    // so an engine whose screen is not shown need not run at all.
+    u8 DisplayedScreens = 3;
+
     u16 VCount = 0;
     u16 TotalScanlines = 0;
     u16 DispStat[2] {};
