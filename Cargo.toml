@@ -9,6 +9,7 @@ description = "Safe bindings to the melonDS Nintendo DS core, shaped for determi
 
 [dependencies]
 melonds-sys = { path = "melonds-sys" }
+log = "0.4"
 thiserror = "1"
 
 [dev-dependencies]

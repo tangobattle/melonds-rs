@@ -272,6 +272,7 @@ name = "melonds"
 version = "0.1.0"
 dependencies = [
  "image",
+ "log",
  "melonds-sys",
  "sha2",
  "thiserror",

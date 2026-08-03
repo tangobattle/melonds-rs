@@ -9,10 +9,8 @@
 //! owned by the instance, the way its trap table is. The core's
 //! platform layer is still link-time global underneath, but its
 //! `userdata` pointer is per instance, so nothing above the FFI shim
-//! is: the one process-global hook left is [`install_logger`], because
-//! the core's log callback is the one that carries no instance.
-
-use std::sync::OnceLock;
+//! is: the one process-global hook left is [`install_default_logger`],
+//! because the core's log callback is the one that carries no instance.
 
 /// Active-high key bits, DS KEYINPUT/KEYXY layout.
 pub mod keys {
@@ -89,23 +87,15 @@ pub trait Host: Send {
 /// 16 aid slots of 1024 bytes.
 const RECV_BUF: usize = 16 * 1024;
 
-static LOGGER: OnceLock<Box<dyn Fn(i32, &str) + Send + Sync>> = OnceLock::new();
+static LOGGER_INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Route the core's log lines. Process-global because the core's log
-/// callback is the one platform hook that carries no instance — melonDS
-/// logs from before any instance exists. May be called once; later
-/// calls return the rejected logger as an error. Uninstalled, log lines
-/// are dropped.
-#[allow(clippy::type_complexity)]
-pub fn install_logger(
-    logger: Box<dyn Fn(i32, &str) + Send + Sync>,
-) -> Result<(), Box<dyn Fn(i32, &str) + Send + Sync>> {
-    let mut candidate = Some(logger);
-    LOGGER.get_or_init(|| candidate.take().unwrap());
-    match candidate {
-        None => Ok(()),
-        Some(rejected) => Err(rejected),
-    }
+/// Route the core's log lines through the `log` crate, under target
+/// `melonds`. Process-global because the core's log callback is the one
+/// platform hook that carries no instance — melonDS logs from before
+/// any instance exists. Safe to call from any thread, and installing
+/// repeatedly is fine. Uninstalled, log lines are dropped.
+pub fn install_default_logger() {
+    LOGGER_INSTALLED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The instance's own [`Host`], back out of the `userdata` pointer the
@@ -118,10 +108,21 @@ unsafe fn host_of<'a>(userdata: *mut std::ffi::c_void) -> &'a dyn Host {
 }
 
 unsafe extern "C" fn host_log(level: i32, msg: *const std::ffi::c_char) {
-    if let Some(logger) = LOGGER.get() {
-        let msg = std::ffi::CStr::from_ptr(msg).to_string_lossy();
-        logger(level, msg.trim_end());
+    if !LOGGER_INSTALLED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
     }
+    // melonDS Platform::LogLevel: Debug=0, Info=1, Warn=2, Error=3.
+    let level = match level {
+        0 => log::Level::Debug,
+        1 => log::Level::Info,
+        2 => log::Level::Warn,
+        _ => log::Level::Error,
+    };
+    if !log::log_enabled!(level) {
+        return;
+    }
+    let msg = std::ffi::CStr::from_ptr(msg).to_string_lossy();
+    log::log!(level, "{}", msg.trim_end());
 }
 
 unsafe extern "C" fn host_write_save(
