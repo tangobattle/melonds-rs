@@ -29,7 +29,7 @@
 // 14.2 carries the divider and square-root registers — see NDS::DoSavestate.
 // 14.3 carries the tick's span of emulated time — see NDS::SliceEnd.
 // 14.4 carries the renderer's rasterized output — see Renderer::DoSavestate.
-#define SAVESTATE_MINOR 4
+#define SAVESTATE_MINOR 5
 
 // bitmask for the savestate config word
 enum

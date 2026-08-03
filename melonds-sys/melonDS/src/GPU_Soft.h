@@ -57,6 +57,11 @@ private:
     friend class SoftRenderer2D;
     friend class SoftRenderer3D;
 
+    // Whether the state just loaded carried both engines' pending
+    // sprite line (14.5 and up). Older ones did not, and PostLoadState
+    // falls back to the guess that was there before.
+    bool SpriteLineInState = false;
+
     u32* Framebuffer[2][2];
 
     u32* Output3D;

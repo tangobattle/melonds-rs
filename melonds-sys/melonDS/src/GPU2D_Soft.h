@@ -51,6 +51,8 @@ private:
         OBJ_Mosaic = (1<<20),
     };
 
+    void DoSavestate(Savestate* file);
+
     alignas(8) u32 BGOBJLine[256*2];
 
     alignas(8) u8 WindowMask[256];

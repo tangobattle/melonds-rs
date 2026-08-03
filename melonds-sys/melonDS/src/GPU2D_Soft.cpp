@@ -1270,6 +1270,29 @@ void SoftRenderer2D::BuildSpriteLineMask()
     SpriteLineMaskValid = true;
 }
 
+void SoftRenderer2D::DoSavestate(Savestate* file)
+{
+    // The sprite pre-render for the next line to be composited, and the
+    // per-line summaries InterleaveSprites reads with it.
+    //
+    // Sprites are drawn one line ahead of the line that reads them (see
+    // GPU::StartScanline), so there is a window in every scanline where
+    // this buffer belongs to a line that has not been composited yet.
+    // A rollback pair takes a state whenever its tick ends, which lands
+    // inside that window as often as not — so this is state, not a
+    // cache, and re-deriving which line it holds from VCount cannot
+    // work: VCount advances at the top of the scanline, the pre-render
+    // happens 48 cycles later, and a state taken between the two would
+    // be read off by one.
+    file->VarArray(OBJLine, sizeof(OBJLine));
+    file->VarArray(OBJWindow, sizeof(OBJWindow));
+    file->Var32(&NumSprites);
+    file->Var32(&SpritePrioOnLine);
+    file->VarBool(&SpriteBlendOnLine);
+    file->Var32((u32*)&SpriteXMin);
+    file->Var32((u32*)&SpriteXMax);
+}
+
 void SoftRenderer2D::DrawSprites(u32 line)
 {
     // the OBJ buffers don't get updated at all if the 2D engine is disabled

@@ -128,6 +128,12 @@ public:
     virtual void VBlank() = 0;
     virtual void VBlankEnd() = 0;
 
+    // Whatever rasterization this engine carries across the line that
+    // reads it — the soft renderer's sprite pre-render is the case (see
+    // SoftRenderer2D::DoSavestate). A renderer whose equivalent lives
+    // somewhere a savestate cannot reach carries nothing.
+    virtual void DoSavestate(Savestate* file) {}
+
     virtual bool NeedsShaderCompile() { return false; }
     virtual void ShaderCompileStep(int& current, int& count) {}
 

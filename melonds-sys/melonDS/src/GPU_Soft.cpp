@@ -88,6 +88,17 @@ void SoftRenderer::DoSavestate(Savestate* file)
 {
     Renderer::DoSavestate(file);
 
+    // 14.5: both engines' pending sprite line. Above the render check
+    // below on purpose — engine A's sprites feed the capture unit even
+    // with the picture off, so they are state whether or not anyone is
+    // looking at the console.
+    SpriteLineInState = file->IsAtLeastVersion(14, 5);
+    if (SpriteLineInState)
+    {
+        Rend2D_A->DoSavestate(file);
+        Rend2D_B->DoSavestate(file);
+    }
+
     // Only for a console someone is looking at. With rendering off
     // nothing writes these buffers — DrawScanline composites just the
     // lines the capture unit reads, and those land in VRAM, which is
@@ -127,14 +138,20 @@ void SoftRenderer::PostLoadState()
     // capture) would capture some other frame's pixels and run off.
     // Both stale buffers are rebuilt from the loaded state:
 
-    // The OBJ line buffers, whose line 0 was pre-rendered at
-    // VCount==262 of the frame *before* the snapshot. Redrawing from
-    // the loaded OAM is the same idempotent redraw the render-skip
-    // capture path relies on (see DrawScanline), with the same
-    // exposure to OAM writes landing between VCount 262 and the frame
-    // boundary.
-    Rend2D_A->DrawSprites(0);
-    Rend2D_B->DrawSprites(0);
+    // The OBJ line buffers now travel in the state itself (14.5, see
+    // SoftRenderer2D::DoSavestate), because which line they hold is not
+    // recoverable from anything else the state carries.
+    //
+    // Older states did not have them, and this is what they got: line
+    // 0, redrawn from the loaded OAM. That is right only across a frame
+    // boundary — at VCount==262 line 0 is indeed the pending one — and
+    // wrong for every state taken inside the visible area, which came
+    // back with line 0's sprites on whatever line it composited next.
+    if (!SpriteLineInState)
+    {
+        Rend2D_A->DrawSprites(0);
+        Rend2D_B->DrawSprites(0);
+    }
 
     // And the 3D color/depth/attribute buffers, filled by the render
     // kick at VCount==215 of that same previous frame. Deferred rather
