@@ -9,8 +9,8 @@
 //! owned by the instance, the way its trap table is. The core's
 //! platform layer is still link-time global underneath, but its
 //! `userdata` pointer is per instance, so nothing above the FFI shim
-//! is: the one process-global hook left is [`install_default_logger`],
-//! because the core's log callback is the one that carries no instance.
+//! is: even the core's log callback — the one that carries no instance
+//! — just routes through the `log` crate, leaving nothing to register.
 
 /// Active-high key bits, DS KEYINPUT/KEYXY layout.
 pub mod keys {
@@ -87,17 +87,6 @@ pub trait Host: Send {
 /// 16 aid slots of 1024 bytes.
 const RECV_BUF: usize = 16 * 1024;
 
-static LOGGER_INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Route the core's log lines through the `log` crate, under target
-/// `melonds`. Process-global because the core's log callback is the one
-/// platform hook that carries no instance — melonDS logs from before
-/// any instance exists. Safe to call from any thread, and installing
-/// repeatedly is fine. Uninstalled, log lines are dropped.
-pub fn install_default_logger() {
-    LOGGER_INSTALLED.store(true, std::sync::atomic::Ordering::Relaxed);
-}
-
 /// The instance's own [`Host`], back out of the `userdata` pointer the
 /// core threads through every platform call. The pointee is the boxed
 /// trait object [`Nds::new`] parked in the instance, alive for as long
@@ -107,10 +96,11 @@ unsafe fn host_of<'a>(userdata: *mut std::ffi::c_void) -> &'a dyn Host {
     &**(userdata as *const Box<dyn Host>)
 }
 
+/// The core's log lines, routed through the `log` crate under target
+/// `melonds`. The one platform callback that isn't a [`Host`] method:
+/// it carries no instance, because melonDS logs from before any
+/// instance exists.
 unsafe extern "C" fn host_log(level: i32, msg: *const std::ffi::c_char) {
-    if !LOGGER_INSTALLED.load(std::sync::atomic::Ordering::Relaxed) {
-        return;
-    }
     // melonDS Platform::LogLevel: Debug=0, Info=1, Warn=2, Error=3.
     let level = match level {
         0 => log::Level::Debug,
