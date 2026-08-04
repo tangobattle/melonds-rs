@@ -127,6 +127,44 @@ public:
 
     void VarArray(void* data, u32 len);
 
+    // Declare a block worth watching that this state never hands to
+    // `VarArray`. The 3D engine's polygon RAM is the one that matters:
+    // it is packed a record at a time out of a struct full of pointers,
+    // so the copy a dirty record could avoid has to be asked for by
+    // name.
+    void TrackBulk(const void* data, u32 len)
+    {
+        if (BulkArrays)
+            BulkArrays->emplace_back(data, len);
+    }
+
+    // Whether [data, data+len) is untouched since the buffer on the
+    // other side of this state was filled — so both hold the same bytes
+    // and neither needs writing. Answers false without a record, which
+    // is what makes every caller safe by default.
+    bool Clean(const void* data, u32 len) const
+    {
+        const u8* at = (const u8*)data;
+        if (!WatchBase || at < WatchBase || at + len > WatchBase + WatchSize)
+            return false;
+        const u32 last = (u32)(at + len - 1 - WatchBase) >> 12;
+        for (u32 page = (u32)(at - WatchBase) >> 12; page <= last; page++)
+            if (PageGen[page] > SinceGen)
+                return false;
+        return true;
+    }
+
+    // Step the stream over bytes that are already equal on both sides.
+    // Only a caller that has asked `Clean` first may do this.
+    void Skip(u32 len)
+    {
+        if (Error || finished) return;
+        if (buffer_offset + len <= buffer_length)
+            buffer_offset += len;
+        else
+            Error = true;
+    }
+
     // The copy VarArray makes, minus the pages the dirty record proves
     // are already equal. See the definition.
     void MoveArray(void* dst, const void* src, const void* tracked, u32 len);

@@ -313,6 +313,14 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
 {
     file->Section("GP3D");
 
+    // Polygon RAM is packed a record at a time below rather than handed
+    // over whole, so say it is worth watching: the pack is twenty
+    // memcpys and ten pointer conversions for each of four thousand
+    // slots and it is 40% of a capture, while a battle that draws no 3D
+    // — which is every netbattle these carts have — leaves all of them
+    // untouched from one tick to the next.
+    file->TrackBulk(PolygonRAM, sizeof(PolygonRAM));
+
     CmdFIFO.DoSavestate(file);
     CmdPIPE.DoSavestate(file);
 
@@ -415,9 +423,27 @@ void GPU3D::DoSavestate(Savestate* file) noexcept
 
     file->VarArray(VertexRAM, sizeof(VertexRAM));
 
+    // Which pages of polygon RAM are already equal on both sides —
+    // asked once each rather than once per polygon, since eighteen of
+    // them share a page and the answer costs more than the record it
+    // saves otherwise.
+    constexpr u32 kPolyPages = (sizeof(PolygonRAM) + 0xFFF) >> 12;
+    bool pageClean[kPolyPages];
+    for (u32 p = 0; p < kPolyPages; p++)
+        pageClean[p] = file->Clean((const u8*)PolygonRAM + ((size_t)p << 12), 1);
+
     for(int i = 0; i < 2048*2; i++)
     {
         Polygon* poly = &PolygonRAM[i];
+
+        // Untouched since the buffer on the other side was filled: it
+        // already holds this record, whichever way the bytes would go.
+        const size_t at = (size_t)i * sizeof(Polygon);
+        if (pageClean[at >> 12] && pageClean[(at + sizeof(Polygon) - 1) >> 12])
+        {
+            file->Skip(188);
+            continue;
+        }
 
         // Same packing story as Vertex::DoSavestate: one 188-byte
         // record, byte-compatible with the former per-field writes
