@@ -17,6 +17,7 @@
 // Must precede every melonDS header (it de-GCCs them under MSVC).
 #include "msvc_compat.h"
 
+#include <algorithm>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -53,11 +54,159 @@ void mds_set_host_vtable(const MdsHostVtable* vt)
 // ---------------------------------------------------------------------
 // The instance.
 
+// A console lives in its own write-watched reservation, so that a
+// snapshot can ask the operating system which of its pages the frames
+// since the last one actually touched — the hardware's own dirty bits,
+// at no cost to the emulation. A rollback session snapshots every tick
+// and a battle moves ~3% of a console's state per tick, so copying only
+// what moved is most of a snapshot's cost.
+//
+// Where the reservation cannot be write-watched (any platform but
+// Windows), `watch_base` stays null and every save and load copies
+// everything, exactly as before.
+struct ConsoleMemory
+{
+    void* base = nullptr;
+    size_t size = 0;
+    // Per page, the generation at the end of which it was last written,
+    // indexed by (address - base) >> 12. A page outside every watched
+    // range keeps NEVER_CLEAN, so nothing is ever skipped on the word
+    // of a record that is not being kept.
+    static constexpr u32 NEVER_CLEAN = 0xFFFFFFFF;
+    std::vector<u32> page_gen;
+    u32 generation = 0;
+    // The page ranges worth asking the kernel about: the bulk arrays a
+    // savestate actually moves, learned from the first one. Empty until
+    // then, which means "the whole reservation".
+    std::vector<std::pair<size_t, size_t>> watched;
+    // GetWriteWatch's output buffer, kept rather than reallocated: it
+    // is one page pointer per dirty page and this runs every tick.
+    std::vector<void*> written;
+};
+
 struct MdsNds
 {
-    std::unique_ptr<NDS> nds;
+    ConsoleMemory memory;
+    std::unique_ptr<NDS, void (*)(NDS*)> nds { nullptr, nullptr };
     void* userdata;
 };
+
+// One console's worth of write-watched pages. Windows tracks writes in
+// the page tables and hands the list back on request, which is exactly
+// the question a snapshot has; nothing else here needs to know a write
+// happened.
+static bool watched_alloc(ConsoleMemory& mem, size_t size)
+{
+#ifdef _WIN32
+    void* p = VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT | MEM_WRITE_WATCH, PAGE_READWRITE);
+    if (p)
+    {
+        mem.base = p;
+        mem.size = size;
+        mem.page_gen.assign((size + 4095) / 4096, ConsoleMemory::NEVER_CLEAN);
+        mem.written.resize((size + 4095) / 4096);
+        return true;
+    }
+#endif
+    (void)size;
+    return false;
+}
+
+static void watched_free(ConsoleMemory& mem)
+{
+#ifdef _WIN32
+    if (mem.base)
+        VirtualFree(mem.base, 0, MEM_RELEASE);
+#endif
+    mem.base = nullptr;
+}
+
+// Close the current generation: every page written since the last call
+// is stamped with it. A buffer filled right after this carries the
+// generation as its own, and a page written later gets a higher one —
+// which is the whole test a save or a load then makes.
+static void watch_advance(ConsoleMemory& mem)
+{
+    if (!mem.base)
+        return;
+#ifdef _WIN32
+    mem.generation++;
+    ULONG granularity = 0;
+
+    // Ask only about the ranges the bulk copies read: the reservation
+    // is a whole console and most of it — timing tables, framebuffers,
+    // the renderer's scratch — is never serialized, but the kernel
+    // still walks the page tables of whatever it is asked about, which
+    // costs more than the copy the answer saves.
+    const bool learned = !mem.watched.empty();
+    const size_t queries = learned ? mem.watched.size() : 1;
+    for (size_t q = 0; q < queries; q++)
+    {
+        u8* from = (u8*)mem.base;
+        size_t bytes = mem.size;
+        if (learned)
+        {
+            from = (u8*)mem.base + (mem.watched[q].first << 12);
+            bytes = (mem.watched[q].second - mem.watched[q].first) << 12;
+        }
+        ULONG_PTR count = mem.written.size();
+        if (GetWriteWatch(WRITE_WATCH_FLAG_RESET, from, bytes, mem.written.data(), &count, &granularity) != 0)
+        {
+            // The kernel refused: treat the range as written, which
+            // costs a full copy and stays correct.
+            const size_t first = (from - (u8*)mem.base) >> 12;
+            std::fill(mem.page_gen.begin() + first, mem.page_gen.begin() + first + (bytes >> 12), mem.generation);
+            continue;
+        }
+        for (ULONG_PTR i = 0; i < count; i++)
+        {
+            size_t page = ((u8*)mem.written[i] - (u8*)mem.base) >> 12;
+            if (page < mem.page_gen.size())
+                mem.page_gen[page] = mem.generation;
+        }
+    }
+#endif
+}
+
+// Adopt the bulk arrays a full save just reported as the ranges worth
+// watching. Their pages start clean as of the generation that save
+// carries — it moved every one of them — and every other page keeps
+// NEVER_CLEAN, so nothing outside is ever skipped.
+static void watch_learn(ConsoleMemory& mem, std::vector<std::pair<const void*, uint32_t>>& arrays)
+{
+    if (!mem.base || !mem.watched.empty() || arrays.empty())
+        return;
+
+    std::vector<std::pair<size_t, size_t>> pages;
+    for (auto& entry : arrays)
+    {
+        const u8* p = (const u8*)entry.first;
+        if (p < (u8*)mem.base || p + entry.second > (u8*)mem.base + mem.size)
+            continue; // outside the reservation: never eligible anyway
+        pages.emplace_back((size_t)(p - (u8*)mem.base) >> 12,
+                           ((size_t)(p + entry.second - 1 - (u8*)mem.base) >> 12) + 1);
+    }
+    if (pages.empty())
+        return;
+
+    std::sort(pages.begin(), pages.end());
+    for (auto& range : pages)
+    {
+        if (!mem.watched.empty() && range.first <= mem.watched.back().second)
+            mem.watched.back().second = std::max(mem.watched.back().second, range.second);
+        else
+            mem.watched.push_back(range);
+    }
+
+    // Put back every sentinel the whole-reservation pass overwrote.
+    // Until the ranges were known that pass stamped a generation onto
+    // every page it found written, unwatched ones included — and an
+    // unwatched page is never asked about again, so it would have kept
+    // that generation and read as clean forever after.
+    std::fill(mem.page_gen.begin(), mem.page_gen.end(), ConsoleMemory::NEVER_CLEAN);
+    for (auto& range : mem.watched)
+        std::fill(mem.page_gen.begin() + range.first, mem.page_gen.begin() + range.second, mem.generation);
+}
 
 // Traps run under the JIT: a trapped address always starts its own
 // block (CompileBlock cuts blocks in front of one) and the dispatch
@@ -129,13 +278,31 @@ MdsNds* mds_nds_new(const uint8_t* rom, uint32_t rom_len, const uint8_t* save, u
     if (!cart)
         return nullptr;
 
-    wrapper->nds = std::make_unique<NDS>(std::move(args), wrapper.get());
+    // Placement-new into the write-watched reservation when there is
+    // one; a plain heap console otherwise, which simply never reports
+    // any page clean.
+    if (watched_alloc(wrapper->memory, sizeof(NDS)))
+    {
+        NDS* console = new (wrapper->memory.base) NDS(std::move(args), wrapper.get());
+        wrapper->nds = { console, [](NDS* p) { p->~NDS(); } };
+    }
+    else
+    {
+        wrapper->nds = { new NDS(std::move(args), wrapper.get()), [](NDS* p) { delete p; } };
+    }
     wrapper->nds->SetNDSCart(std::move(cart));
     return wrapper.release();
 }
 
 void mds_nds_free(MdsNds* w)
 {
+    if (!w)
+        return;
+    // The console is destroyed before its reservation goes away: the
+    // deleter runs the destructor in place, `watched_free` returns the
+    // pages.
+    w->nds.reset();
+    watched_free(w->memory);
     delete w;
 }
 
@@ -322,21 +489,41 @@ uint64_t mds_sys_timestamp(MdsNds* w)
     return w->nds->GetSysClockCycles(0);
 }
 
-int32_t mds_state_save(MdsNds* w, uint8_t* buf, uint32_t cap)
+// `since` is the generation the buffer already holds a state from, or
+// 0 for a buffer this console has never filled — see ConsoleMemory. It
+// is closed here rather than by the caller so that the writes a save or
+// a load itself makes land in the generation after the one it reports.
+int32_t mds_state_save(MdsNds* w, uint8_t* buf, uint32_t cap, uint32_t since, uint32_t* gen_out)
 {
+    watch_advance(w->memory);
     Savestate state(buf, cap, true);
     if (state.Error)
         return -1;
+    if (since != 0)
+        state.SetDirtyPages(w->memory.base, (uint32_t)w->memory.size, w->memory.page_gen.data(), since);
+    // The first full save is where the ranges to watch come from; it
+    // moves every byte anyway, so recording costs it nothing.
+    std::vector<std::pair<const void*, uint32_t>> arrays;
+    const bool learning = w->memory.base && w->memory.watched.empty();
+    if (learning)
+        state.RecordBulkArrays(&arrays);
     if (!w->nds->DoSavestate(&state) || state.Error)
         return -1;
+    if (learning)
+        watch_learn(w->memory, arrays);
+    if (gen_out)
+        *gen_out = w->memory.base ? w->memory.generation : 0;
     return (int32_t)state.Length();
 }
 
-int32_t mds_state_load(MdsNds* w, const uint8_t* buf, uint32_t len)
+int32_t mds_state_load(MdsNds* w, const uint8_t* buf, uint32_t len, uint32_t since)
 {
+    watch_advance(w->memory);
     Savestate state(const_cast<uint8_t*>(buf), len, false);
     if (state.Error)
         return 0;
+    if (since != 0)
+        state.SetDirtyPages(w->memory.base, (uint32_t)w->memory.size, w->memory.page_gen.data(), since);
     return (w->nds->DoSavestate(&state) && !state.Error) ? 1 : 0;
 }
 

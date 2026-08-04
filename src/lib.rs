@@ -240,10 +240,39 @@ static VTABLE: melonds_sys::MdsHostVtable = melonds_sys::MdsHostVtable {
     mp_clock: Some(host_mp_clock),
 };
 
+/// Where a savestate buffer's contents came from: the console that
+/// filled it and the point in that console's history it holds.
+///
+/// A rollback session captures into a buffer it filled before and
+/// restores out of one it filled itself, so both sides of those copies
+/// already agree about nearly every page. Handing the tag back says
+/// which state the buffer holds, and only the pages the console has
+/// written since then are moved. The default tag matches no console, so
+/// a buffer read off disk or filled by another instance moves whole —
+/// which is the only safe answer for one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct StateGen {
+    /// Which `Nds`, so a foreign buffer can never be believed.
+    epoch: u64,
+    /// That console's generation counter when the buffer was filled.
+    /// Zero disables the shortcut.
+    gen: u32,
+    /// The length that generation serialized to. A state whose layout
+    /// moved would put the pages at different offsets, so the tag only
+    /// applies to a buffer of the same size.
+    len: usize,
+}
+
+/// Successive `Nds` instances, so one console's generations are never
+/// read as another's.
+static STATE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// One emulated DS.
 pub struct Nds {
     ptr: *mut melonds_sys::MdsNds,
     state_buf_hint: usize,
+    /// This instance's tag for [`StateGen`].
+    state_epoch: u64,
     /// The instance's [`Host`], double-boxed so the core's `userdata`
     /// can be a thin pointer to it. Kept alive for as long as the core
     /// holds that pointer — the same lifetime contract as the trap
@@ -288,6 +317,9 @@ unsafe extern "C" fn trap_trampoline(userdata: *mut std::ffi::c_void, addr: u32)
     let mut nds = Nds {
         ptr: table.ptr,
         state_buf_hint: 0,
+        // A borrowed wrapper never serializes, and an epoch of 0 could
+        // not match a real console's anyway.
+        state_epoch: 0,
         _host: None,
         traps: None,
         traps7: None,
@@ -347,6 +379,7 @@ impl Nds {
         Ok(Nds {
             ptr,
             state_buf_hint: 0,
+            state_epoch: STATE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             _host: Some(host),
             traps: None,
             traps7: None,
@@ -717,33 +750,75 @@ impl Nds {
     /// save reuses its allocation and skips re-zeroing bytes the core is
     /// about to overwrite anyway.
     pub fn save_state(&mut self, buf: &mut Vec<u8>) -> Result<(), Error> {
-        // The first save probes with a generous ceiling; after that the
-        // measured size (plus slack) is the size, and a DS state runs
-        // ~6 MB rather than the 20 MB the probe reserves.
-        let mut cap = if self.state_buf_hint > 0 {
-            self.state_buf_hint
+        self.save_state_since(buf, StateGen::default()).map(|_| ())
+    }
+
+    /// Serialize into a buffer that already holds `prev`, moving only
+    /// the pages written since. See [`StateGen`]; passing the default
+    /// is the same as [`save_state`](Nds::save_state).
+    pub fn save_state_since(&mut self, buf: &mut Vec<u8>, prev: StateGen) -> Result<StateGen, Error> {
+        // The shortcut needs the buffer to be laid out exactly as that
+        // generation left it: same console, same length.
+        let mut since = if prev.epoch == self.state_epoch && prev.len == buf.len() {
+            prev.gen
         } else {
-            20 << 20
+            0
         };
         loop {
-            if buf.len() < cap {
-                buf.resize(cap, 0);
+            // The first save probes with a generous ceiling; after that
+            // the measured size (plus slack) is the size, and a DS state
+            // runs ~6 MB rather than the 20 MB the probe reserves.
+            let mut cap = if self.state_buf_hint > 0 {
+                self.state_buf_hint
+            } else {
+                20 << 20
+            };
+            loop {
+                if buf.len() < cap {
+                    // Growing keeps what is already there, which is what
+                    // the pages this save skips rely on.
+                    buf.resize(cap, 0);
+                }
+                let mut gen = 0u32;
+                let n = unsafe {
+                    melonds_sys::mds_state_save(self.ptr, buf.as_mut_ptr(), buf.len() as u32, since, &mut gen)
+                };
+                if n > 0 {
+                    let len = n as usize;
+                    // A state whose length moved is a state whose pages
+                    // moved: the skipped ones are at the wrong offsets
+                    // now, so write the whole thing and try again from
+                    // scratch. Only a console that changed shape mid
+                    // session can reach this.
+                    if since != 0 && len != prev.len {
+                        since = 0;
+                        break;
+                    }
+                    buf.truncate(len);
+                    self.state_buf_hint = len + (64 << 10);
+                    return Ok(StateGen { epoch: self.state_epoch, gen, len });
+                }
+                if cap >= 256 << 20 {
+                    return Err(Error::Savestate);
+                }
+                cap *= 2;
             }
-            let n = unsafe { melonds_sys::mds_state_save(self.ptr, buf.as_mut_ptr(), buf.len() as u32) };
-            if n > 0 {
-                buf.truncate(n as usize);
-                self.state_buf_hint = n as usize + (64 << 10);
-                return Ok(());
-            }
-            if cap >= 256 << 20 {
-                return Err(Error::Savestate);
-            }
-            cap *= 2;
         }
     }
 
     pub fn load_state(&mut self, buf: &[u8]) -> Result<(), Error> {
-        let ok = unsafe { melonds_sys::mds_state_load(self.ptr, buf.as_ptr(), buf.len() as u32) };
+        self.load_state_from(buf, StateGen::default())
+    }
+
+    /// Restore from a buffer this console filled at `from`, moving only
+    /// the pages written since. See [`StateGen`].
+    pub fn load_state_from(&mut self, buf: &[u8], from: StateGen) -> Result<(), Error> {
+        let since = if from.epoch == self.state_epoch && from.len == buf.len() {
+            from.gen
+        } else {
+            0
+        };
+        let ok = unsafe { melonds_sys::mds_state_load(self.ptr, buf.as_ptr(), buf.len() as u32, since) };
         if ok == 1 {
             Ok(())
         } else {

@@ -191,8 +191,14 @@ uint64_t mds_sys_timestamp(MdsNds* nds);
 // Savestate round-trip, in memory. mds_state_save returns the number of
 // bytes written, or -1 if cap was too small (call again with a bigger
 // buffer). mds_state_load returns 1 on success.
-int32_t mds_state_save(MdsNds* nds, uint8_t* buf, uint32_t cap);
-int32_t mds_state_load(MdsNds* nds, const uint8_t* buf, uint32_t len);
+//
+// `since` names the generation whose state the buffer already holds, so
+// that only the pages written after it are moved; 0 means move
+// everything, which is right for any buffer this console did not fill
+// itself. `mds_state_save` reports the generation its buffer now holds
+// through `gen_out` (0 when this console tracks no pages).
+int32_t mds_state_save(MdsNds* nds, uint8_t* buf, uint32_t cap, uint32_t since, uint32_t* gen_out);
+int32_t mds_state_load(MdsNds* nds, const uint8_t* buf, uint32_t len, uint32_t since);
 
 // Copy of the cart's current save memory. Returns length (0 if none);
 // out may be null to query the length.

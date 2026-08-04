@@ -22,6 +22,8 @@
 #include <cstring>
 #include <string>
 #include <stdio.h>
+#include <vector>
+#include <utility>
 #include "types.h"
 
 #define SAVESTATE_MAJOR 14
@@ -54,6 +56,28 @@ public:
     bool Saving;
 
     u32 CurSection;
+
+    // Only move the pages of the console that have moved.
+    //
+    // A rollback session snapshots every tick and restores into the
+    // same console it captured, so most of a state's bytes are already
+    // equal on both sides of the copy. `SetDirtyPages` hands over the
+    // embedder's per-page record of when each was last written and the
+    // generation the buffer on the other side was filled at; a page
+    // last written no later than that is identical in both, and
+    // `VarArray` leaves it alone.
+    //
+    // Only arrays inside the watched block are eligible — anything
+    // outside it (the cart's save memory, say) has no record and is
+    // always copied. Set nothing and every byte moves, which is what
+    // every caller but the session wants.
+    void SetDirtyPages(const void* base, u32 size, const u32* pageGen, u32 sinceGen)
+    {
+        WatchBase = (const u8*)base;
+        WatchSize = size;
+        PageGen = pageGen;
+        SinceGen = sinceGen;
+    }
 
     void Section(const char* magic);
 
@@ -103,6 +127,19 @@ public:
 
     void VarArray(void* data, u32 len);
 
+    // The copy VarArray makes, minus the pages the dirty record proves
+    // are already equal. See the definition.
+    void MoveArray(void* dst, const void* src, const void* tracked, u32 len);
+
+    // Collect the bulk arrays this state moves, so the embedder can
+    // watch their pages and no others: asking the kernel about a
+    // console's whole allocation costs more than the copy it saves,
+    // and all but a few percent of that allocation is never serialized.
+    // Only arrays worth watching are reported — the rest are a scalar
+    // or two and always move.
+    static constexpr u32 BULK_ARRAY = 64 * 1024;
+    void RecordBulkArrays(std::vector<std::pair<const void*, u32>>* out) { BulkArrays = out; }
+
     void Finish();
 
     // TODO rewinds the stream
@@ -140,6 +177,14 @@ public:
     }
 
 private:
+    // The dirty record `SetDirtyPages` installs; null base means every
+    // byte moves.
+    const u8* WatchBase = nullptr;
+    u32 WatchSize = 0;
+    const u32* PageGen = nullptr;
+    u32 SinceGen = 0;
+    std::vector<std::pair<const void*, u32>>* BulkArrays = nullptr;
+
     static constexpr u32 NO_SECTION = 0xffffffff;
     void CloseCurrentSection();
     bool Resize(u32 new_length);

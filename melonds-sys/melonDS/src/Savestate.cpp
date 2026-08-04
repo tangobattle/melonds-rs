@@ -244,7 +244,7 @@ void Savestate::VarArray(void* data, u32 len)
             // This way we can write the data and reduce the chance of needing to resize again.
         }
 
-        memcpy(buffer + buffer_offset, data, len);
+        MoveArray(buffer + buffer_offset, data, data, len);
     }
     else
     {
@@ -259,10 +259,57 @@ void Savestate::VarArray(void* data, u32 len)
             // but we can't magically make the desired data appear.
         }
 
-        memcpy(data, buffer + buffer_offset, len);
+        MoveArray(data, buffer + buffer_offset, data, len);
     }
 
     buffer_offset += len;
+}
+
+// Copy `len` bytes, minus whatever the dirty record proves is already
+// equal on both sides.
+//
+// `tracked` is the console-side pointer whichever direction this runs
+// in — it is the one the page record is about; `dst`/`src` say which
+// way the bytes go. A page whose last write is no later than the
+// generation the other side was filled at holds the same bytes there,
+// so the copy skips it; the runs between are copied whole, since one
+// memcpy of two adjacent pages beats two of one.
+void Savestate::MoveArray(void* dst, const void* src, const void* tracked, u32 len)
+{
+    const u8* base = (const u8*)tracked;
+    if (BulkArrays && len >= BULK_ARRAY)
+        BulkArrays->emplace_back(tracked, len);
+    if (!WatchBase || base < WatchBase || base + len > WatchBase + WatchSize)
+    {
+        memcpy(dst, src, len);
+        return;
+    }
+
+    const u32 first = (u32)(base - WatchBase) >> 12;
+    const u32 last = (u32)(base + len - 1 - WatchBase) >> 12;
+    u32 run = 0; // pages [run, page) are dirty and pending a copy
+    bool open = false;
+
+    // One page past the end closes whatever run reaches the end.
+    for (u32 page = first; page <= last + 1; page++)
+    {
+        const bool dirty = page <= last && PageGen[page] > SinceGen;
+        if (dirty && !open)
+        {
+            run = page;
+            open = true;
+        }
+        else if (!dirty && open)
+        {
+            // Clamp the run to the array: its first and last pages are
+            // shared with whatever lies either side of it.
+            const size_t from = run == first ? 0 : (size_t)(WatchBase + ((size_t)run << 12) - base);
+            const size_t to = (size_t)(WatchBase + ((size_t)page << 12) - base);
+            const size_t end = to > len ? len : to;
+            memcpy((u8*)dst + from, (const u8*)src + from, end - from);
+            open = false;
+        }
+    }
 }
 
 void Savestate::Finish()
