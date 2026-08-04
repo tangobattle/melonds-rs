@@ -1174,7 +1174,19 @@ void GPU::StartHBlank(u32 line) noexcept
     }
     else if (VCount == 215)
     {
-        Rend->Start3DRendering();
+        // Only if something will read the picture. The 3D layer is
+        // composited by engine A alone, and `DrawScanline` already
+        // declines to composite for a console nobody displays — so
+        // rasterizing a scene for it is work whose only consumer has
+        // already been turned off. Capture keeps it: what the capture
+        // unit reads lands in VRAM, which is state.
+        //
+        // The texture dirty-state this skips is accumulated, not lost:
+        // `DeriveState` reports everything dirtied since it last ran,
+        // so the first frame after a dark stretch rebuilds whatever it
+        // has to.
+        if (RenderEnabled || CaptureEnable)
+            Rend->Start3DRendering();
     }
     else if (VCount == 262)
     {
