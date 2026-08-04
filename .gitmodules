@@ -1,0 +1,4 @@
+[submodule "melonds-sys/melonDS"]
+	path = melonds-sys/melonDS
+	url = https://github.com/tangobattle/melonDS.git
+	branch = tango
