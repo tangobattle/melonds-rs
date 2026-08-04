@@ -23,6 +23,10 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The embedder's two halves: the C ABI the Rust side calls, and the
+/// Platform:: implementation melonDS resolves at link time.
+const SHIM_SOURCES: [&str; 2] = ["shim.cpp", "platform.cpp"];
+
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
@@ -91,8 +95,7 @@ fn main() {
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("failed to write bindings");
 
-    println!("cargo:rerun-if-changed=shim/shim.cpp");
-    println!("cargo:rerun-if-changed=shim/shim.h");
+    println!("cargo:rerun-if-changed=shim");
     println!("cargo:rerun-if-changed=melonDS/src");
 }
 
@@ -186,7 +189,7 @@ fn build_wasm(manifest_dir: &Path, melonds_dir: &Path, out_dir: &Path) {
         // PUBLIC on CMake's `core` target, so it has to be repeated for
         // anything that shares the headers.
         .flag("-fwrapv")
-        .file(manifest_dir.join("shim/shim.cpp"))
+        .files(SHIM_SOURCES.map(|src| manifest_dir.join("shim").join(src)))
         .include(melonds_dir.join("src"))
         .include(manifest_dir.join("shim"))
         .compile("melonds_shim");
@@ -230,8 +233,7 @@ fn build_wasm(manifest_dir: &Path, melonds_dir: &Path, out_dir: &Path) {
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("failed to write bindings");
 
-    println!("cargo:rerun-if-changed=shim/shim.cpp");
-    println!("cargo:rerun-if-changed=shim/shim.h");
+    println!("cargo:rerun-if-changed=shim");
     println!("cargo:rerun-if-changed=melonDS/src");
     println!("cargo:rerun-if-env-changed=WASI_SDK_PATH");
 }
@@ -394,7 +396,7 @@ fn compile_shim(
     let mut shim = cc::Build::new();
     shim.cpp(true)
         .std("c++20")
-        .file(manifest_dir.join("shim/shim.cpp"))
+        .files(SHIM_SOURCES.map(|src| manifest_dir.join("shim").join(src)))
         .include(melonds_dir.join("src"))
         .include(manifest_dir.join("shim"))
         .flag("-fwrapv");

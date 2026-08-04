@@ -78,9 +78,6 @@ void mds_release_screen(MdsNds* nds);
 // per frame and carried by whoever replays the frame.
 void mds_set_mic_static(MdsNds* nds, int on);
 
-// Borrow the current front framebuffers, 32-bit BGRA, 256x192 each.
-// Valid until the next mds_run_frame / mds_state_load. Returns 0 and
-// nulls both on failure (no frame rendered yet).
 // Toggle framebuffer production for this console. Off saves the 2D
 // compositing cost for a console nobody displays; emulation (including
 // display capture into VRAM) is bit-identical either way.
@@ -89,6 +86,9 @@ void mds_set_render(MdsNds* nds, int enabled);
 // whose screen is not shown does not compose it.
 void mds_set_displayed_screens(MdsNds* nds, uint8_t screens);
 
+// Borrow the current front framebuffers, 32-bit BGRA, 256x192 each.
+// Valid until the next mds_run_frame / mds_state_load. Returns 0 and
+// nulls both on failure (no frame rendered yet).
 int mds_framebuffers(MdsNds* nds, const uint32_t** top, const uint32_t** bottom);
 
 // Drain up to max_frames stereo sample pairs into out (interleaved L/R,
@@ -196,7 +196,8 @@ uint64_t mds_sys_timestamp(MdsNds* nds);
 // that only the pages written after it are moved; 0 means move
 // everything, which is right for any buffer this console did not fill
 // itself. `mds_state_save` reports the generation its buffer now holds
-// through `gen_out` (0 when this console tracks no pages).
+// through `gen_out` (0 when this console tracks no pages). See
+// melonDS's ConsoleMemory for what a generation is.
 int32_t mds_state_save(MdsNds* nds, uint8_t* buf, uint32_t cap, uint32_t since, uint32_t* gen_out);
 int32_t mds_state_load(MdsNds* nds, const uint8_t* buf, uint32_t len, uint32_t since);
 
