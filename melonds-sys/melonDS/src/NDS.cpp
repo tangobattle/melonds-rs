@@ -501,6 +501,10 @@ void NDS::Reset()
     memset(ARM7WRAM, 0, 0x10000);
 
     MapSharedWRAM(0);
+    // MapSharedWRAM returns early when the value is unchanged, which at
+    // reset it usually is; main RAM's size has just been decided, so the
+    // table has to be built here regardless.
+    RebuildARM7DirectMap();
 
     // TODO FIX THOSE VALUES
     // TODO figure out what they should be
@@ -1434,6 +1438,26 @@ void NDS::SetExMemCnt(u32 cpu, u16 val, u16 mask)
 }
 
 
+// The ARM7's direct-memory table, as a pure function of the mappings
+// it covers. Rebuilt rather than patched: it is four entries, and the
+// callers are the two places a mapping can move.
+void NDS::RebuildARM7DirectMap()
+{
+    memset(ARM7DirectMap, 0, sizeof(ARM7DirectMap));
+
+    // A DSi routes the ARM7's bus through its own overrides; leaving
+    // every entry empty is what sends it there.
+    if (ConsoleType != 0)
+        return;
+
+    ARM7DirectMap[0x02000000 >> 23] = {MainRAM, MainRAMMask, 0};
+    ARM7DirectMap[0x02800000 >> 23] = {MainRAM, MainRAMMask, 0};
+    ARM7DirectMap[0x03000000 >> 23] = SWRAM_ARM7.Mem
+        ? DirectRegion{SWRAM_ARM7.Mem, SWRAM_ARM7.Mask, 0}
+        : DirectRegion{ARM7WRAM, ARM7WRAMSize - 1, 0};
+    ARM7DirectMap[0x03800000 >> 23] = {ARM7WRAM, ARM7WRAMSize - 1, 0};
+}
+
 void NDS::MapSharedWRAM(u8 val)
 {
     if (val == WRAMCnt)
@@ -1473,6 +1497,8 @@ void NDS::MapSharedWRAM(u8 val)
         SWRAM_ARM7.Mask = 0x7FFF;
         break;
     }
+
+    RebuildARM7DirectMap();
 }
 
 

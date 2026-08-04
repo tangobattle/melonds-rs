@@ -486,6 +486,14 @@ public: // TODO: Encapsulate the rest of these members
     // a base and a mask it can index directly. See the definition at
     // the end of this header — the ARM7's fetches go through it, and
     // they are the hottest reads in the machine.
+    //
+    // Answered from a table indexed by the top nine address bits rather
+    // than by a switch over them: this runs twice per ARM7 instruction
+    // (the fetch, then most instructions' load or store), and the four
+    // entries a battle ever hits share one cache line.
+    struct DirectRegion { const u8* Mem; u32 Mask; u32 Pad; };
+    DirectRegion ARM7DirectMap[512] {};
+    void RebuildARM7DirectMap();
     inline bool ARM7DirectRegion(u32 addr, const u8** mem, u32* mask) const;
 
     // The same question for the ARM9, whose code fetches already have
@@ -738,37 +746,19 @@ inline void ARMv4::AddCycles_CD()
 // leave the CPU for `NDS::ARM7Read32` — an out-of-line virtual call
 // into a switch over the whole address space, per instruction, and
 // again for every load. In practice it is reading one of three plain
-// arrays; the switch below says which, and the read then happens in
-// the caller.
+// arrays; the table below says which, and the read then happens in the
+// caller.
 //
 // A DSi answers `false` to all of it: `DSi::ARM7Read32` overrides this
 // path with a different bus, and this is not the place to reimplement
-// it. `ConsoleType` is a member the caller already has hot.
+// it. Its table is left empty, so it costs the DSi nothing to ask.
 inline bool NDS::ARM7DirectRegion(u32 addr, const u8** mem, u32* mask) const
 {
-    if (ConsoleType != 0)
-        return false;
-
-    switch (addr & 0xFF800000)
+    const DirectRegion& region = ARM7DirectMap[addr >> 23];
+    if (region.Mem)
     {
-    case 0x02000000:
-    case 0x02800000:
-        *mem = MainRAM;
-        *mask = MainRAMMask;
-        return true;
-
-    case 0x03000000:
-        if (SWRAM_ARM7.Mem)
-        {
-            *mem = SWRAM_ARM7.Mem;
-            *mask = SWRAM_ARM7.Mask;
-            return true;
-        }
-        [[fallthrough]];
-
-    case 0x03800000:
-        *mem = ARM7WRAM;
-        *mask = ARM7WRAMSize - 1;
+        *mem = region.Mem;
+        *mask = region.Mask;
         return true;
     }
 
@@ -780,10 +770,10 @@ inline bool NDS::ARM7DirectRegion(u32 addr, const u8** mem, u32* mask) const
     //
     // Last, not first: the ARM7 does run BIOS code (the SWI handlers,
     // the halt loop), but a battle's fetches are overwhelmingly RAM,
-    // and asking this question ahead of the switch measured 3% slower
+    // and asking this question ahead of the table measured 3% slower
     // across the whole tick — two extra loads and a branch on every
     // access to save a call on a few.
-    if (addr < 0x00004000)
+    if (addr < 0x00004000 && ConsoleType == 0)
     {
         u32 pc = ARM7.R[15];
         if (pc >= 0x00004000) return false;
