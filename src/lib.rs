@@ -356,6 +356,11 @@ impl Nds {
         // varies per instance rides in `userdata`.
         static VTABLE_INSTALLED: std::sync::Once = std::sync::Once::new();
         VTABLE_INSTALLED.call_once(|| unsafe {
+            // On wasm32 no loader has run the C++ static constructors;
+            // this Once is the "before anything else" the sys crate
+            // asks for. See melonds_sys::run_static_ctors.
+            #[cfg(target_arch = "wasm32")]
+            melonds_sys::run_static_ctors();
             melonds_sys::mds_set_host_vtable(&VTABLE);
         });
         let host = Box::new(host);

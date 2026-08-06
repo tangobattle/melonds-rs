@@ -194,6 +194,20 @@ fn build_wasm(manifest_dir: &Path, melonds_dir: &Path, out_dir: &Path) {
         .include(manifest_dir.join("shim"))
         .compile("melonds_shim");
 
+    // The syscall floor, C rather than C++ — the __wasi_* names must
+    // link unmangled to shadow wasi-libc's import-backed versions. See
+    // the note at the top of wasi-shim.c.
+    cc::Build::new()
+        .compiler(sdk.join("bin").join("clang"))
+        .archiver(sdk.join("bin").join("llvm-ar"))
+        .target("wasm32-wasip1-threads")
+        .flag("--target=wasm32-wasip1-threads")
+        .flag(format!("--sysroot={}", sysroot.display()))
+        .flag("-pthread")
+        .file(manifest_dir.join("shim").join("wasi-shim.c"))
+        .file(manifest_dir.join("shim").join("wasi-stubs.c"))
+        .compile("melonds_wasi_shim");
+
     println!("cargo:rustc-link-search=native={}", build_dir.join("src").display());
     println!("cargo:rustc-link-search=native={}", build_dir.join("src/teakra/src").display());
     println!("cargo:rustc-link-lib=static=core");
