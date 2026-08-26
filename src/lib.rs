@@ -32,12 +32,30 @@ pub mod keys {
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 192;
 
+/// An exact audio clock, in samples per second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AudioSampleRate {
+    pub numerator: u32,
+    pub denominator: u32,
+}
+
+impl AudioSampleRate {
+    pub const fn new(numerator: u32, denominator: u32) -> Self {
+        Self { numerator, denominator }
+    }
+
+    /// The clock in floating-point Hz, for playback APIs that require it.
+    pub const fn as_f64(self) -> f64 {
+        self.numerator as f64 / self.denominator as f64
+    }
+}
+
 /// The original DS SPU's native output rate.
 ///
 /// Its 33,513,982 Hz master clock advances one stereo sample every
-/// 1,024 cycles. The quotient is deliberately left exact rather than
-/// rounded to the commonly quoted 32,768 Hz.
-pub const AUDIO_SAMPLE_RATE: f64 = 33_513_982.0 / 1_024.0;
+/// 1,024 cycles. The ratio stays intact so a caller needing exact media
+/// timing never has to recover it from a floating-point quotient.
+pub const AUDIO_SAMPLE_RATE: AudioSampleRate = AudioSampleRate::new(33_513_982, 1_024);
 
 /// One instance's half of the platform: save persistence and the
 /// wireless airwaves, owned by the [`Nds`] it answers for — handed over
