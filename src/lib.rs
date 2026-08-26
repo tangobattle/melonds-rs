@@ -32,6 +32,13 @@ pub mod keys {
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 192;
 
+/// The original DS SPU's native output rate.
+///
+/// Its 33,513,982 Hz master clock advances one stereo sample every
+/// 1,024 cycles. The quotient is deliberately left exact rather than
+/// rounded to the commonly quoted 32,768 Hz.
+pub const AUDIO_SAMPLE_RATE: f64 = 33_513_982.0 / 1_024.0;
+
 /// One instance's half of the platform: save persistence and the
 /// wireless airwaves, owned by the [`Nds`] it answers for — handed over
 /// at [`Nds::new`] and dropped with the instance, so there is no
@@ -850,4 +857,3 @@ impl Drop for Nds {
         unsafe { melonds_sys::mds_nds_free(self.ptr) }
     }
 }
-

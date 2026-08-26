@@ -42,6 +42,12 @@ MdsNds* mds_nds_new(const uint8_t* rom, uint32_t rom_len, const uint8_t* save, u
     // cache, so rollback pays a recompile, but that is far cheaper than
     // interpreting every tick.
     args.Firmware = Firmware(0);
+    // The SPU mixes one sample every 1,024 master-clock cycles. Feeding
+    // that exact rate to melonDS makes blip_buf's ratio 512:1 (its clock
+    // is the 16.756991 MHz half-rate), so the embedder receives the
+    // console's native samples instead of melonDS first converting them
+    // to its frontend-oriented 48 kHz default.
+    args.OutputSampleRate = 33513982.0 / 1024.0;
 
     // Uniquify the generated firmware's MAC per instance, mirroring
     // EmuInstance::customizeFirmware — distinct MACs are what let two
