@@ -86,7 +86,8 @@ void mds_set_render(MdsNds* nds, int enabled);
 // whose screen is not shown does not compose it.
 void mds_set_displayed_screens(MdsNds* nds, uint8_t screens);
 
-// Borrow the current front framebuffers, 32-bit BGRA, 256x192 each.
+// Borrow the current front framebuffers, 256x192 unpacked BGR666 each:
+// 0xXXBBGGRR, with each color in the low six bits of its byte lane.
 // Valid until the next mds_run_frame / mds_state_load. Returns 0 and
 // nulls both on failure (no frame rendered yet).
 int mds_framebuffers(MdsNds* nds, const uint32_t** top, const uint32_t** bottom);

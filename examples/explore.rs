@@ -46,9 +46,13 @@ fn dump(nds: &mut melonds::Nds, path: &std::path::Path) {
             for y in 0..h {
                 for x in 0..w {
                     let px = screen[(y * w + x) as usize];
-                    // BGRA word -> RGBA bytes
-                    let [b, g, r, _] = px.to_le_bytes();
-                    img.put_pixel(x, y + i as u32 * h, image::Rgba([r, g, b, 0xff]));
+                    // Unpacked BGR666 word (0xXXBBGGRR) -> RGBA8.
+                    let expand = |v: u8| (u16::from(v) * 0xff / 0x3f) as u8;
+                    img.put_pixel(
+                        x,
+                        y + i as u32 * h,
+                        image::Rgba([expand(px.red()), expand(px.green()), expand(px.blue()), 0xff]),
+                    );
                 }
             }
         }

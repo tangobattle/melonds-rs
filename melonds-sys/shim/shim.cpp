@@ -78,6 +78,7 @@ MdsNds* mds_nds_new(const uint8_t* rom, uint32_t rom_len, const uint8_t* save, u
         return nullptr;
 
     wrapper->nds = wrapper->memory.Create(std::move(args), wrapper.get());
+    wrapper->nds->GPU.OutputUnpackedBgr666 = true;
     wrapper->nds->SetNDSCart(std::move(cart));
     return wrapper.release();
 }

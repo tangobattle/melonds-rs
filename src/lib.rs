@@ -32,6 +32,43 @@ pub mod keys {
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 192;
 
+/// One pixel from the DS's completed display compositor, before a host
+/// expands its six-bit color channels for an ordinary eight-bit surface.
+///
+/// melonDS stores this *unpacked* BGR666 value in a 32-bit word as
+/// `0xXXBBGGRR`. Each color occupies the low six bits of its byte lane;
+/// the remaining bits, including `XX`, carry no color information.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct UnpackedBgr666(u32);
+
+impl UnpackedBgr666 {
+    /// Interpret a compositor word in melonDS's `0xXXBBGGRR` layout.
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    /// The complete word supplied by melonDS, including non-color bits.
+    pub const fn raw(self) -> u32 {
+        self.0
+    }
+
+    /// The native six-bit red component (`0..=63`).
+    pub const fn red(self) -> u8 {
+        (self.0 & 0x3f) as u8
+    }
+
+    /// The native six-bit green component (`0..=63`).
+    pub const fn green(self) -> u8 {
+        ((self.0 >> 8) & 0x3f) as u8
+    }
+
+    /// The native six-bit blue component (`0..=63`).
+    pub const fn blue(self) -> u8 {
+        ((self.0 >> 16) & 0x3f) as u8
+    }
+}
+
 /// An exact audio clock, in samples per second.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioSampleRate {
@@ -701,9 +738,10 @@ impl Nds {
         unsafe { melonds_sys::mds_set_displayed_screens(self.ptr, screens) }
     }
 
-    /// The current front framebuffers (top, bottom), BGRA8888,
-    /// 256x192 each. `None` until a frame has rendered.
-    pub fn framebuffers(&mut self) -> Option<(&[u32], &[u32])> {
+    /// The current front framebuffers (top, bottom), 256x192 each, in
+    /// the DS compositor's native color precision. `None` until a frame
+    /// has rendered.
+    pub fn framebuffers(&mut self) -> Option<(&[UnpackedBgr666], &[UnpackedBgr666])> {
         let mut top = std::ptr::null();
         let mut bottom = std::ptr::null();
         let ok = unsafe { melonds_sys::mds_framebuffers(self.ptr, &mut top, &mut bottom) };
@@ -711,7 +749,12 @@ impl Nds {
             return None;
         }
         let n = SCREEN_WIDTH * SCREEN_HEIGHT;
-        unsafe { Some((std::slice::from_raw_parts(top, n), std::slice::from_raw_parts(bottom, n))) }
+        unsafe {
+            Some((
+                std::slice::from_raw_parts(top.cast::<UnpackedBgr666>(), n),
+                std::slice::from_raw_parts(bottom.cast::<UnpackedBgr666>(), n),
+            ))
+        }
     }
 
     /// Drain buffered audio into `out` (interleaved stereo i16).

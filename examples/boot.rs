@@ -19,8 +19,8 @@ fn fb_digest(nds: &mut melonds::Nds) -> String {
     hex(&hasher.finalize()[..8])
 }
 
-fn bytemuck_cast(words: &[u32]) -> &[u8] {
-    unsafe { std::slice::from_raw_parts(words.as_ptr() as *const u8, std::mem::size_of_val(words)) }
+fn bytemuck_cast(words: &[melonds::UnpackedBgr666]) -> &[u8] {
+    unsafe { std::slice::from_raw_parts(words.as_ptr().cast(), std::mem::size_of_val(words)) }
 }
 
 fn hex(bytes: &[u8]) -> String {
